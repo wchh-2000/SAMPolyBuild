@@ -94,12 +94,12 @@ class TestConfig:
         self.save_results=False
         self.log=True
 test_cfg=TestConfig()
-model = PromptModel(args, test_cfg=test_cfg)
+model = PromptModel(args, test_cfg=test_cfg,divide_by_area=True)
 if args.distributed:
     model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
 
 checkpoint_callback = ModelCheckpoint(
-        monitor='val/mIoU',
+        monitor='val_area/miou_medium',
         mode='max',
         every_n_epochs=1,
         save_last=True,

@@ -7,12 +7,11 @@ join = os.path.join
 #self defined:
 from segment_anything import build_sam
 from utils.post_process import GetPolygons,generate_coco_ann,transform_polygon_to_original
-from utils.metrics.iou import iou_from_poly,IoU
-from utils.metrics.boundaryF import boundaryF_from_poly
-from utils.metrics.juncs_eval import precision_recall_from_vertex_set
+from utils.metrics.iou import IoU
+from utils.test_utils import PolygonMetrics
 from utils.losses import sigmoid_l1_loss,focal_dice_loss,BCEDiceLoss
 class PromptModel(pl.LightningModule):
-    def __init__(self, args,test_cfg=None):
+    def __init__(self, args,test_cfg=None,divide_by_area=False):
         super().__init__()
         self.args = args
         self.test_cfg=test_cfg
@@ -25,6 +24,8 @@ class PromptModel(pl.LightningModule):
         self.sam_model = build_sam(load_pl=load_pl,**vars(args))
         self.vmap_loss = BCEDiceLoss()
         self.bound_loss = BCEDiceLoss(pos_weight=2)
+        self.divide_by_area = divide_by_area
+        self.metrics_calculator = PolygonMetrics(divide_by_area=divide_by_area)
         
     def forward_step(self, batch,seg_size):
         with torch.no_grad():
@@ -130,7 +131,6 @@ class PromptModel(pl.LightningModule):
             if self.args.instance_input:
                 pos_transforms=[pos_transforms[i] for i in valid_idx]
                 ori_img_ids=[ori_img_ids[i] for i in valid_idx]
-        precision,recall,miou,vf1,bound_f=0,0,0,0,0
         gt_size=pred_vmap.shape[-1]
         for b in range(len(batch_polygons)):
             if self.args.instance_input:
@@ -143,30 +143,23 @@ class PromptModel(pl.LightningModule):
                     gt_polygon=transform_polygon_to_original(gt_polygons[b], pos_transforms[b])
                 else:
                     gt_polygon=gt_polygons[b]*ori_size[0]/gt_size
-                p,r=precision_recall_from_vertex_set(pred_polygon[:-1,:], gt_polygon[:-1,:])#最后一个点为重复点，去除
-                precision+=p
-                recall+=r
-                f1=2*p*r/(p+r+1e-8)
-                vf1+=f1
-                miou+=iou_from_poly(pred_polygon,gt_polygon,650,650)#first to mask. todo 图像尺寸适配其他数据集 目前spacenet
-                f,p,r=boundaryF_from_poly(pred_polygon,gt_polygon,650,650)
-                bound_f+=f
+                self.metrics_calculator.calculate_metrics(pred_polygon, gt_polygon)
             if self.test_cfg.save_results:
                 if self.args.instance_input:
                     ori_img_id=ori_img_ids[b]
                 self.results_poly.append(generate_coco_ann(pred_polygon,batch_scores[b],ori_img_id))
-        precision/=batch_n #no mask分数记为0
-        recall/=batch_n
-        miou/=batch_n
-        vf1/=batch_n
-        bound_f/=batch_n
         if log:
-            self.log('val/v-precision', precision, on_step=False, on_epoch=True, logger=True)
-            self.log('val/v-recall', recall, on_step=False, on_epoch=True, logger=True)
-            self.log('val/v-f1', vf1, on_step=False, on_epoch=True, logger=True,prog_bar=True)
-            self.log('val/mIoU', miou, on_step=False, on_epoch=True, logger=True,prog_bar=True)
-            self.log('val/bound_f', bound_f, on_step=False, on_epoch=True, logger=True,prog_bar=True)
-        return dict(precision=precision,recall=recall,f1=vf1,miou=miou,bound_f=bound_f)    
+            m=self.metrics_calculator.compute_average(batch_n)#todo 多卡验证是否有问题
+            if self.divide_by_area:
+                for i,size in enumerate(['large', 'medium', 'small']):
+                    for key in m[i]:
+                        self.log(f'val_area/{key}_{size}', m[i][key], on_step=False, on_epoch=True, logger=True)
+            else:                
+                self.log('val/v-precision', m['precision'], on_step=False, on_epoch=True, logger=True)
+                self.log('val/v-recall', m['recall'], on_step=False, on_epoch=True, logger=True)
+                self.log('val/v-f1', m['vf1'], on_step=False, on_epoch=True, logger=True,prog_bar=True)
+                self.log('val/mIoU', m['miou'], on_step=False, on_epoch=True, logger=True,prog_bar=True)
+                self.log('val/bound_f', m['bound_f'], on_step=False, on_epoch=True, logger=True,prog_bar=True)
     
     def configure_optimizers(self):
         paramlrs=[]

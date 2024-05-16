@@ -6,6 +6,7 @@ import argparse
 #self defined:
 from model import PromptModel
 from utils.test_utils import load_args
+import csv
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--task_name', type=str, default='prompt_instance_spacenet')
@@ -84,25 +85,50 @@ class TestConfig:
 test_cfg=TestConfig()
 device = 'cuda:'+str(args.gpus[0])
 
-model=PromptModel(args,test_cfg=test_cfg).to(device)
+divide_by_area=True
+model=PromptModel(args,test_cfg=test_cfg,divide_by_area=divide_by_area).to(device)
 model.eval()
-validation_results=[]
 for step, batch in enumerate(tqdm(dataloader)):
     batch=model.transfer_batch_to_device(batch,device,step)
-    result = model.validation_step(batch, step,log=False)
-    validation_results.append(result)
+    model.validation_step(batch, step,log=False)
 if eval:
-    n=len(validation_results)
-    precision = sum([x['precision'] for x in validation_results])/n
-    recall = sum([x['recall'] for x in validation_results])/n
-    f1 = sum([x['f1'] for x in validation_results])/n
-    miou = sum([x['miou'] for x in validation_results])/n
-    bound_f = sum([x['bound_f'] for x in validation_results])/n
-    print('mIoU %.2f' % (miou*100))
-    print('boundary F1 %.2f' % (bound_f*100))
-    print('vertex F1 %.2f' % (f1*100))
+    if divide_by_area:
+        l_metrics, m_metrics, s_metrics = model.metrics_calculator.compute_average()
+        #large medium small
+        # 打开CSV文件
+        csv_file_path = join(args.result_pth, f'metrics.csv')
+        file_exists = os.path.isfile(csv_file_path)
+        
+        with open(csv_file_path, 'a', newline='') as csvfile:
+            fieldnames = [
+                'max_distance', 'miou_l', 'miou_m', 'miou_s', 
+                'vf1_l', 'vf1_m', 'vf1_s',
+                'bf1_l', 'bf1_m', 'bf1_s'
+            ]
+            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+            # 如果文件不存在，则写入表头
+            if not file_exists:
+                writer.writeheader()
+            # task = args.task_name.split('/')[1]
+            writer.writerow({
+                # 'task': task,
+                'max_distance': args.max_distance,
+                'miou_l': round(l_metrics['miou'] * 100, 2),
+                'miou_m': round(m_metrics['miou'] * 100, 2),
+                'miou_s': round(s_metrics['miou'] * 100, 2),
+                'vf1_l': round(l_metrics['vf1'] * 100, 2),
+                'vf1_m': round(m_metrics['vf1'] * 100, 2),
+                'vf1_s': round(s_metrics['vf1'] * 100, 2),
+                'bf1_l': round(l_metrics['bound_f'] * 100, 2),
+                'bf1_m': round(m_metrics['bound_f'] * 100, 2),
+                'bf1_s': round(s_metrics['bound_f'] * 100, 2)
+            })
+    else:
+        metrics = model.metrics_calculator.compute_average(len(dataset))
+        print(metrics)
+    
 if test_cfg.save_results:
-    name=f'results_polyon.json'
+    name=f'results_polyon_d{args.max_distance}.json'
     dt_file=join(args.result_pth,name)    
     with open(dt_file,'w') as _out:
         json.dump(model.results_poly,_out)
