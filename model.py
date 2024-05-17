@@ -10,6 +10,10 @@ from utils.post_process import GetPolygons,generate_coco_ann,transform_polygon_t
 from utils.metrics.iou import IoU
 from utils.test_utils import PolygonMetrics
 from utils.losses import sigmoid_l1_loss,focal_dice_loss,BCEDiceLoss
+import multiprocessing as mp
+import atexit
+import time
+import numpy as np
 class PromptModel(pl.LightningModule):
     def __init__(self, args,test_cfg=None,divide_by_area=False):
         super().__init__()
@@ -18,10 +22,12 @@ class PromptModel(pl.LightningModule):
         self.results_poly = []
         self.no_mask_n=0
         if test_cfg.train:
+            self.multi_process=False
             load_pl=False
             self.loss_weight=args.loss_weight
         else:
-            load_pl=True            
+            self.multi_process=True
+            load_pl=True
         self.sam_model = build_sam(load_pl=load_pl,**vars(args))
         self.vmap_loss = BCEDiceLoss()
         self.bound_loss = BCEDiceLoss(pos_weight=2)        
@@ -29,8 +35,16 @@ class PromptModel(pl.LightningModule):
         self.divide_by_area = divide_by_area
         self.large_th=7500
         self.medium_th=32**2
-        self.dist_dict={'small':10,'medium':10,'large':13}
+        self.dist_dict={'small':10,'medium':10,'large':13}#mix
+        # self.dist_dict={'small':9,'medium':11,'large':14}#spacenet
         self.metrics_calculator = PolygonMetrics(divide_by_area=divide_by_area)
+        self.avg_process_time=0
+        self.avg_pos_process_time=0
+        
+        if self.multi_process:
+            num_processes = 6  # Set the number of processes
+            self.pool = mp.Pool(processes=num_processes)        
+            atexit.register(self.pool.close)
         
     def forward_step(self, batch,seg_size):
         with torch.no_grad():
@@ -106,6 +120,7 @@ class PromptModel(pl.LightningModule):
             return self.args.max_distance
     def validation_step(self, batch, batch_idx,log=True):
         ori_size=batch['ori_size']
+        s=time.perf_counter()
         with torch.no_grad():
             res=self.forward_step(batch,seg_size=ori_size)
         pred_poly,seg_logit=res['poly'],res['seg']
@@ -140,25 +155,33 @@ class PromptModel(pl.LightningModule):
         else:
             pos_transforms=None
             ori_img_id=batch['ori_img_id']#only one img per batch
-        max_distances=self.get_dist_thr(batch['bbox'],pos_transforms)
-        batch_polygons, batch_scores,valid_idx,no_mask=GetPolygons(
+        m=time.perf_counter()
+        max_distances=self.get_dist_thr(batch['bbox'],pos_transforms)        
+        pool=self.pool if self.multi_process else None        
+        batch_polygons, batch_scores,valid_mask=GetPolygons(
                 seg_prob,pred_vmap,pred_voff,ori_size=ori_size,
-                max_distance=max_distances,pos_transforms=pos_transforms)
-        batch_n=len(seg_prob)
-        if no_mask>0:#delete no mask pred instances
-            assert no_mask==batch_n-len(valid_idx)
-            self.no_mask_n+=no_mask            
+                max_distance=max_distances,pos_transforms=pos_transforms,pool=pool)
+        end=time.perf_counter()
+        self.avg_process_time+=(end-s)
+        self.avg_pos_process_time+=(end-m)
+        if self.test_cfg.save_results:
+            ann_ids=batch['ann_ids']
+        if not np.all(valid_mask):#delete invalid pred instances
+            # self.no_mask_n+=no_mask
+            valid_idx=np.where(valid_mask)[0]
+            print(len(valid_mask)-len(valid_idx),'invalid')
+            batch_polygons=[p for p in batch_polygons if p is not None]
+            batch_scores=batch_scores[valid_mask]
             if self.test_cfg.eval:
                 gt_polygons=[gt_polygons[i] for i in valid_idx]
             if self.args.instance_input:
                 pos_transforms=[pos_transforms[i] for i in valid_idx]
                 ori_img_ids=[ori_img_ids[i] for i in valid_idx]
+            if self.test_cfg.save_results:
+                ann_ids=[ann_ids[i] for i in valid_idx]
         gt_size=pred_vmap.shape[-1]
         for b in range(len(batch_polygons)):
-            if self.args.instance_input:
-                pred_polygon=transform_polygon_to_original(batch_polygons[b], pos_transforms[b],allready_scale=True)#恢复到原图（650*650）坐标
-            else:
-                pred_polygon=batch_polygons[b]
+            pred_polygon=batch_polygons[b]
             
             if self.test_cfg.eval:
                 if self.args.instance_input:
@@ -169,9 +192,10 @@ class PromptModel(pl.LightningModule):
             if self.test_cfg.save_results:
                 if self.args.instance_input:
                     ori_img_id=ori_img_ids[b]
-                self.results_poly.append(generate_coco_ann(pred_polygon,batch_scores[b],ori_img_id))
+                self.results_poly.append(generate_coco_ann(pred_polygon,batch_scores[b],ori_img_id,ann_ids[b]))
         if log:
-            m=self.metrics_calculator.compute_average(batch_n)#todo 多卡验证是否有问题
+            batch_n=len(seg_prob)
+            m=self.metrics_calculator.compute_average(batch_n)
             if self.divide_by_area:
                 for i,size in enumerate(['large', 'medium', 'small']):
                     for key in m[i]:
