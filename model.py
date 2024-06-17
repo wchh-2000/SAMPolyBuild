@@ -157,9 +157,9 @@ class PromptModel(pl.LightningModule):
             else:                
                 self.log('val/v-precision', m['precision'], on_step=False, on_epoch=True, logger=True)
                 self.log('val/v-recall', m['recall'], on_step=False, on_epoch=True, logger=True)
-                self.log('val/v-f1', m['vf1'], on_step=False, on_epoch=True, logger=True,prog_bar=True)
+                self.log('val/v-f1', m['vf1'], on_step=False, on_epoch=True, logger=True,prog_bar=False)
                 self.log('val/mIoU', m['miou'], on_step=False, on_epoch=True, logger=True,prog_bar=True)
-                self.log('val/bound_f', m['bound_f'], on_step=False, on_epoch=True, logger=True,prog_bar=True)
+                self.log('val/bound_f', m['bound_f'], on_step=False, on_epoch=True, logger=True,prog_bar=False)
     
     def configure_optimizers(self):
         paramlrs=[]

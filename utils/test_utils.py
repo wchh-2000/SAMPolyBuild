@@ -43,7 +43,7 @@ def load_args(parser,path=None):
         with open(path, 'r') as f:
             data = json.load(f)
             for key, value in data.items():
-                if key!='checkpoint' and key!='gpus' and key in vars(args):
+                if key!='checkpoint' and key!='gpus' and key!='max_distance' and key in vars(args):
                     setattr(args, key, value)
     return args
 def load_train_args(parser):

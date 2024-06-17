@@ -6,7 +6,7 @@ def sigmoid_l1_loss(logits, targets, offset = 0.0, mask=None):
     logp = torch.sigmoid(logits) + offset 
     loss = torch.abs(logp-targets)
     if mask is not None:
-        t = ((mask == 1) | (mask == 2)).float()#mask为0或1，2标签没用
+        t = (mask >0.7).float()#(mask >0.7)高斯核为3的三种归一化值：0.36787948 0.6065307  1. 自动模式线性插值后>0.7的认为是原始mask为1的像素
         w = t.mean(3, True).mean(2,True)#h,w维度求平均，得到每张图的mask为1的像素数
         w[w==0] = 1 #shape:[b, 1, 1, 1] 各图中n/(w*h) n为mask为1或2的像素数
         # 某图只有t全为0（mask都为0）时w才为0，此时loss为0 置1防止除0

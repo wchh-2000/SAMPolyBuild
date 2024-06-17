@@ -24,7 +24,7 @@ def build_sam(
     freeze_img=False,
     freeze_mask=False,
     image_size=1024,
-    upconv=False,
+    upconv=True,
     remove_polyweight=False,
     selected_imgfeats=None,#用于Prompter中获取中间特征[2,4,6,7,8,9,10,11]
     **kwargs
@@ -126,7 +126,7 @@ def interp_weight(state_dict,image_size,encoder_global_attn_indexes):
             weight = state_dict[key]#[127,64]
             # 更改形状以适应 interpolate 函数:
             weight_reshaped = weight.unsqueeze(0).permute(0, 2, 1)#更改为 [1, 64, 127]
-            #[1, 64, 127]->[1, 64, 27]->[27, 64]
+            #[1, 64, 127]->[1, 64, image_size/8-1]->[image_size/8-1, 64]
             state_dict[key]=F.interpolate(weight_reshaped,
                 size=int(image_size/8-1), mode='linear', align_corners=True).permute(0, 2, 1).squeeze(0)
     return state_dict

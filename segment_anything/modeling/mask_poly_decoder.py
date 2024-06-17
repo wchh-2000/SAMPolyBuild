@@ -22,7 +22,7 @@ class MaskPolyDecoder(nn.Module):
         iou_head_depth: int = 3,
         iou_head_hidden_dim: int = 256,
         add_edge=False,
-        upconv=False,#是否使用上采样卷积代替反卷积
+        upconv=True,#是否使用上采样卷积代替反卷积
     ) -> None:
         """
         Predicts masks given an image and prompt embeddings, using a

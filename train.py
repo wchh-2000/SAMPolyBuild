@@ -26,8 +26,8 @@ parser.add_argument('--batch_size_val', type=int, default=60)
 parser.add_argument('--num_workers', type=int, default=6)
 parser.add_argument('--img_encoder_lr', type=float, default=5e-6)
 parser.add_argument('--decoder_lr', type=float, default=5e-5)
-parser.add_argument('--lr_step', type=int, default=2)
 parser.add_argument('--weight_decay', type=float, default=1e-4)
+parser.add_argument('--val_epoch', type=int, default=2,help='validation frequency, every n epochs')
 #model config:
 parser.add_argument('--model_type', type=str, default='vit_b',help='for image encoder')
 parser.add_argument('--checkpoint', type=str, default='segment_anything/sam_vit_b_01ec64.pth')
@@ -111,6 +111,7 @@ train_param=dict(
     max_epochs=args.epochs,
     log_every_n_steps=50,
     devices=args.gpus,
+    check_val_every_n_epoch=args.val_epoch,
     # accelerator='cpu',
     logger=logger,
     default_root_dir=args.log_dir,
