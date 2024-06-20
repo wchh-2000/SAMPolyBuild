@@ -34,7 +34,7 @@ parser.add_argument('--gaussian', type=bool, default=True,help='whether to use g
 parser.add_argument('--bbox', type=bool, default=True,help='whether to use bbox as prompt')
 parser.add_argument('--mix_bbox_point', type=bool, default=True,help='whether to mix bbox and center point or multi-point prompts')
 #post process config:
-parser.add_argument('--max_distance', type=int, default=12)
+parser.add_argument('--max_distance', default='var')#type=int, default=12) 'var' for variable max distance according to the area of the instance
 
 #Load the same arguments from the training arguments (ignore the 'gpus' argument):
 args = load_args(parser)

@@ -19,12 +19,17 @@ class PromptModel(pl.LightningModule):
         self.no_mask_n=0
         if test_cfg.train:
             load_pl=False
+            self.loss_weight=args.loss_weight
         else:
             load_pl=True            
         self.sam_model = build_sam(load_pl=load_pl,**vars(args))
         self.vmap_loss = BCEDiceLoss()
-        self.bound_loss = BCEDiceLoss(pos_weight=2)
+        self.bound_loss = BCEDiceLoss(pos_weight=2)        
+        self.mask_loss = BCEDiceLoss(pos_weight=2)
         self.divide_by_area = divide_by_area
+        self.large_th=7500
+        self.medium_th=32**2
+        self.dist_dict={'small':10,'medium':10,'large':13}
         self.metrics_calculator = PolygonMetrics(divide_by_area=divide_by_area)
         
     def forward_step(self, batch,seg_size):
@@ -56,18 +61,19 @@ class PromptModel(pl.LightningModule):
         if self.args.multi_mask:
             pred_ious=res['iou']
             iou_matrix = IoU(seg_logit, gt_mask)#[b,3,h,w],[b,1,h,w]->[b,3]
-            loss_iou=F.mse_loss(pred_ious,iou_matrix)
+            loss_iou=self.loss_weight['iou']*F.mse_loss(pred_ious,iou_matrix)
             iou_max, indices = torch.max(iou_matrix, dim=1)  # iou_max: [b], indices: [b]
             batch_indices = torch.arange(seg_logit.size(0)).unsqueeze(1).to(indices.device)
             seg_logit = seg_logit[batch_indices, indices.unsqueeze(1)]
 
-        loss_seg = focal_dice_loss(seg_logit, gt_mask)#只用最大iou的mask计算loss                    
+        # loss_seg = focal_dice_loss(seg_logit, gt_mask)#只用最大iou的mask计算loss
+        loss_seg = self.loss_weight['mask']*self.mask_loss(seg_logit, gt_mask)
         gt_vmap=batch['vmap']
         gt_voff=batch['voff']
         pred_vmap=pred_poly['vmap']
         pred_voff=pred_poly['voff']
-        loss_vmap = self.vmap_loss(pred_vmap, gt_vmap)
-        loss_voff = sigmoid_l1_loss(pred_voff,gt_voff,mask=gt_vmap)
+        loss_vmap = self.loss_weight['vmap']*self.vmap_loss(pred_vmap, gt_vmap)
+        loss_voff = self.loss_weight['voff']*sigmoid_l1_loss(pred_voff,gt_voff,mask=gt_vmap)
         self.log('train/vmap_loss', loss_vmap, on_step=True, logger=True,prog_bar=True)
         self.log('train/voff_loss', loss_voff, on_step=True, logger=True)
         loss=loss_seg+loss_vmap+loss_voff
@@ -77,12 +83,27 @@ class PromptModel(pl.LightningModule):
         if self.args.add_edge:
             gt_edge=batch['edge']
             pred_edge=pred_poly['edge']
-            loss_edge=0.5*self.bound_loss(pred_edge, gt_edge)
+            loss_edge=self.loss_weight['edge']*self.bound_loss(pred_edge, gt_edge)
             loss=loss+loss_edge
             self.log('train/edge_loss', loss_edge, on_step=True, logger=True)
         self.log('train_loss', loss, on_step=True, logger=True)
         self.log('train/seg_loss', loss_seg, on_step=True, logger=True,prog_bar=True)
         return loss
+    def get_dist_thr(self,bboxes,pos_transforms):
+        if self.args.instance_input and type(self.args.max_distance)!=int:
+            dist=[]
+            for bbox,transform in zip(bboxes,pos_transforms):
+                w,h=bbox[2]-bbox[0],bbox[3]-bbox[1]
+                area=(w*h*transform[2]*transform[3]).item()
+                if area > self.large_th:
+                    dist.append(self.dist_dict['large'])
+                elif area > self.medium_th:
+                    dist.append(self.dist_dict['medium'])
+                else:
+                    dist.append(self.dist_dict['small'])
+            return dist
+        else:
+            return self.args.max_distance
     def validation_step(self, batch, batch_idx,log=True):
         ori_size=batch['ori_size']
         with torch.no_grad():
@@ -119,9 +140,10 @@ class PromptModel(pl.LightningModule):
         else:
             pos_transforms=None
             ori_img_id=batch['ori_img_id']#only one img per batch
+        max_distances=self.get_dist_thr(batch['bbox'],pos_transforms)
         batch_polygons, batch_scores,valid_idx,no_mask=GetPolygons(
                 seg_prob,pred_vmap,pred_voff,ori_size=ori_size,
-                max_distance=self.args.max_distance,pos_transforms=pos_transforms)
+                max_distance=max_distances,pos_transforms=pos_transforms)
         batch_n=len(seg_prob)
         if no_mask>0:#delete no mask pred instances
             assert no_mask==batch_n-len(valid_idx)
@@ -155,8 +177,8 @@ class PromptModel(pl.LightningModule):
                     for key in m[i]:
                         self.log(f'val_area/{key}_{size}', m[i][key], on_step=False, on_epoch=True, logger=True)
             else:                
-                self.log('val/v-precision', m['precision'], on_step=False, on_epoch=True, logger=True)
-                self.log('val/v-recall', m['recall'], on_step=False, on_epoch=True, logger=True)
+                self.log('val/v-precision', m['v_precision'], on_step=False, on_epoch=True, logger=True)
+                self.log('val/v-recall', m['v_recall'], on_step=False, on_epoch=True, logger=True)
                 self.log('val/v-f1', m['vf1'], on_step=False, on_epoch=True, logger=True,prog_bar=False)
                 self.log('val/mIoU', m['miou'], on_step=False, on_epoch=True, logger=True,prog_bar=True)
                 self.log('val/bound_f', m['bound_f'], on_step=False, on_epoch=True, logger=True,prog_bar=False)

@@ -28,6 +28,7 @@ parser.add_argument('--img_encoder_lr', type=float, default=5e-6)
 parser.add_argument('--decoder_lr', type=float, default=5e-5)
 parser.add_argument('--weight_decay', type=float, default=1e-4)
 parser.add_argument('--val_epoch', type=int, default=2,help='validation frequency, every n epochs')
+parser.add_argument('--loss_weight', type=dict, default=dict(vmap=1.25,voff=5,mask=3,edge=0.6,iou=10))
 #model config:
 parser.add_argument('--model_type', type=str, default='vit_b',help='for image encoder')
 parser.add_argument('--checkpoint', type=str, default='segment_anything/sam_vit_b_01ec64.pth')
@@ -48,7 +49,7 @@ parser.add_argument('--gaussian', type=bool, default=True,help='whether to use g
 parser.add_argument('--bbox', type=bool, default=True,help='whether to use bbox as prompt')
 parser.add_argument('--mix_bbox_point', type=bool, default=True,help='whether to mix bbox and center point or multi-point prompts')
 #post process config:
-parser.add_argument('--max_distance', type=int, default=12,
+parser.add_argument('--max_distance', default='var',#type=int, default=12,'var' for variable max distance according to the area of the instance
                     help='max distance(T_dist in paper) to retain vertex in mask guided vertex connect')
 
 args = load_train_args(parser)
