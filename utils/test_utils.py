@@ -61,10 +61,10 @@ class PolygonMetrics:
         self.divide_by_area = divide_by_area
         self.area_thresholds = area_thresholds
 
-        self.metrics = {'miou': 0, 'vf1': 0, 'bound_f': 0,'v_precision': 0, 'v_recall': 0}
-        self.large_metrics = {'miou': 0, 'vf1': 0, 'bound_f': 0,'v_precision': 0, 'v_recall': 0}
-        self.medium_metrics = {'miou': 0, 'vf1': 0, 'bound_f': 0,'v_precision': 0, 'v_recall': 0}
-        self.small_metrics = {'miou': 0, 'vf1': 0, 'bound_f': 0,'v_precision': 0, 'v_recall': 0}
+        self.metrics = {'miou': 0, 'bound_f': 0, 'vf1': 0,'v_precision': 0, 'v_recall': 0}
+        self.large_metrics = {'miou': 0, 'bound_f': 0, 'vf1': 0,'v_precision': 0, 'v_recall': 0}
+        self.medium_metrics = {'miou': 0, 'bound_f': 0, 'vf1': 0,'v_precision': 0, 'v_recall': 0}
+        self.small_metrics = {'miou': 0, 'bound_f': 0, 'vf1': 0,'v_precision': 0, 'v_recall': 0}
 
         # self.count = 0
         self.large_count = 0
@@ -112,9 +112,9 @@ class PolygonMetrics:
             self.average_metrics(self.medium_metrics, self.medium_count)
             self.average_metrics(self.small_metrics, self.small_count)
             l,m,s = self.large_metrics.copy(), self.medium_metrics.copy(), self.small_metrics.copy()
-            self.large_metrics = {'miou': 0, 'vf1': 0, 'bound_f': 0,'v_precision': 0, 'v_recall': 0}#训练的一个validation_step清零，不然会累加
-            self.medium_metrics = {'miou': 0, 'vf1': 0, 'bound_f': 0,'v_precision': 0, 'v_recall': 0}
-            self.small_metrics = {'miou': 0, 'vf1': 0, 'bound_f': 0,'v_precision': 0, 'v_recall': 0}
+            self.large_metrics = {'miou': 0, 'bound_f': 0, 'vf1': 0,'v_precision': 0, 'v_recall': 0}#训练的一个validation_step清零，不然会累加
+            self.medium_metrics = {'miou': 0, 'bound_f': 0, 'vf1': 0,'v_precision': 0, 'v_recall': 0}
+            self.small_metrics = {'miou': 0, 'bound_f': 0, 'vf1': 0,'v_precision': 0, 'v_recall': 0}
             # self.count = 0
             self.large_count = 0
             self.medium_count = 0
@@ -124,5 +124,5 @@ class PolygonMetrics:
             #divide_by_area=False时必传入n。训练的验证时为每个batch数，测试时为所有实例数n
             self.average_metrics(self.metrics, n)#no mask分数记为0，总数不排除no mask
             m=self.metrics.copy()
-            self.metrics = {'miou': 0, 'vf1': 0, 'bound_f': 0,'v_precision': 0, 'v_recall': 0}
+            self.metrics = {'miou': 0, 'bound_f': 0, 'vf1': 0,'v_precision': 0, 'v_recall': 0}
             return m

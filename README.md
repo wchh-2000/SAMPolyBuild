@@ -15,9 +15,20 @@ Download the SAM vit_b model from [here](https://dl.fbaipublicfiles.com/segment_
 ### SpaceNet Vegas Dataset
 We converted the original images of the SpaceNet dataset to 8-bit and the annotations to coco format, and divided them into training, validation, and test sets in the ratio of 8:1:1, which are available for download from [here](https://aistudio.baidu.com/datasetdetail/269168). Place the train, val, test folders in the 'dataset/spacenet' folder.
 
-Crop the image according to the bbox of building instances and obtain the annotations of the instances' polygonal contours:
-```shell
-python dataset/crop_bbox.py
+### Custom Dataset
+The custom dataset should be in the following format, or change the **train_dataset_pth**, **val_dataset_pth** in the train.py and **dataset_pth** in the test.py to the corresponding path.
+```
+dataset
+├── dataset_name
+    ├── train
+    |    ├── images
+    |    ├── ann.json
+    ├── val
+    |    ├── images
+    |    ├── ann.json
+    ├── test
+        ├── images
+        ├── ann.json
 ```
 
 ## Training
@@ -31,15 +42,12 @@ python train.py --config configs/prompt_instance_spacenet.json --gpus 0 1 --dist
 ```
 
 ## Testing
-Evaluate with pre-cropped images:
+Evaluate the model on the test set, and save the results:
 ```shell
 python test.py
 ```
-Given a file containing bbox detections or annotations, crop the image with the bbox and predict the polygon results which are restored to the original image coordinates:
-```shell
-python test.py --predict_crop_input --img_dir dataset/spacenet/test/images --bbox_file dataset/spacenet/test/ann.json
-```
-Notes that the bbox file should be in coco format, and don't need to contain the 'segmentation' field.
+You need to change the **--task_name** to the corresponding training task name, and the other arguments will be set automatically according to training configuration.
+
 
 ## Acknowledgement
 This project is developed based on the [Segment Anything Model (SAM)](https://github.com/facebookresearch/segment-anything) project. We thank the authors for their contributions.

@@ -10,7 +10,7 @@ import albumentations as A
 import random
 from utils.data_utils import *
 class PromptDataset(Dataset):
-    def __init__(self, dataset_pth:dict, mode='train',input_size=1024,
+    def __init__(self, dataset_pth:dict, mode='train',input_size=1024,load_gt=True,
                  anns_per_sample=40,select_img_ids=None,
                  gaussian=False,add_edge=False,
                  jitter=True,bbox=True,mix_bbox_point=False):
@@ -21,6 +21,7 @@ class PromptDataset(Dataset):
         self.pixel_std = torch.Tensor([58.395, 57.12, 57.375]).view(-1, 1, 1)
         self.anns_per_sample = anns_per_sample
         #监督信号参数：
+        self.load_gt=load_gt
         self.add_edge=add_edge#是否同时用点和边监督
         self.gaussian=gaussian#是否生成高斯热力图
         #提示参数：
@@ -67,6 +68,8 @@ class PromptDataset(Dataset):
 
     def __len__(self):
         return len(self.img_ann_list)
+    def len_anns(self):
+        return sum([len(anns) for _,anns in self.img_ann_list])
     def __getitem__(self, index):
         img_id, ann_ids = self.img_ann_list[index]
         coco_img = self.coco_ann.loadImgs(img_id)[0]
@@ -85,19 +88,20 @@ class PromptDataset(Dataset):
         # Load annotations
         anns = self.coco_ann.loadAnns(ann_ids)
         polygons = [np.array(ann['segmentation'][0]).reshape(-1,2) for ann in anns]#list of np.array(n,2)
-        if self.mode == 'train':
-            polygons=self.geometric_aug_polygons(polygons)
-            #找出非空的polygon:
-            idxs=[i for i, x in enumerate(polygons) if x.any()]
-            polygons=[p for p in polygons if p.any()]
-            if not polygons:
-                print('empty polygon')
-                return None
-            anns=[anns[i] for i in idxs]#anns与polygons一一对应，因为后面还要获取提示bbox或点
-        else:# no transform, but resize range of polygon to gt_h, gt_w
-            gt_scale_rate=self.gt_h/self.ori_imgsize[0]
-            polygons=[p*gt_scale_rate for p in polygons]
-        data=self.get_batch_ann(polygons)
+        if self.load_gt:
+            if self.mode == 'train':
+                polygons=self.geometric_aug_polygons(polygons)
+                #找出非空的polygon:
+                idxs=[i for i, x in enumerate(polygons) if x.any()]
+                polygons=[p for p in polygons if p.any()]
+                if not polygons:
+                    print('empty polygon')
+                    return None
+                anns=[anns[i] for i in idxs]#anns与polygons一一对应，因为后面还要获取提示bbox或点
+            else:# no transform, but resize range of polygon to gt_h, gt_w
+                gt_scale_rate=self.gt_h/self.ori_imgsize[0]
+                polygons=[p*gt_scale_rate for p in polygons]
+            data=self.get_batch_ann(polygons)
         if self.mode == 'train':
             # Perform geometric and color transformation:
             img = self.geometric_aug_img(img)
@@ -152,6 +156,7 @@ class PromptDataset(Dataset):
         data['ori_size']=self.ori_imgsize
         data['polygon']=polygons
         data['ori_img_id']=img_id
+        data['ann_ids']=ann_ids
         return data
     def init_geometric_aug(self,scale=False):
         #先随机缩放，然后随机裁剪，最终垂直/水平翻转，同时作用在原图、polygon顶点、提示点坐标上
