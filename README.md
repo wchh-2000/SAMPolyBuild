@@ -1,5 +1,6 @@
 # SAMPolyBuild
-Adapting the Segment Anything Model (SAM) for Polygonal Building Extraction
+This repository is the code implementation of the paper ["SAMPolyBuild: Adapting the Segment Anything Model (SAM) for Polygonal Building Extraction"](https://www.sciencedirect.com/science/article/abs/pii/S0924271624003563) accepted by ISPRS Journal of Photogrammetry and Remote Sensing. Now only the prompt mode 
+is provided, the auto mode will be released soon.
 
 ## Installation
 Conda virtual environment is recommended for installation. Please choose the appropriate version of torch and torchvision according to your CUDA version.
@@ -47,6 +48,13 @@ Evaluate the model on the test set, and save the results:
 python test.py
 ```
 You need to change the **--task_name** to the corresponding training task name, and the other arguments will be set automatically according to training configuration.
+
+If you want to use our trained model to evaluate, you can download [prompt_instance_spacenet.ckpt](https://pan.baidu.com/s/11P6vUB6skRBxIcV7mKII1g?pwd=be8m)
+(extract code: be8m) and change the following code in the test.py:
+```python
+args = load_args(parser,path='configs/prompt_instance_spacenet.json')
+args.checkpoint = 'prompt_instance_spacenet.ckpt'
+```
 
 
 ## Acknowledgement
