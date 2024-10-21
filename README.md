@@ -1,6 +1,7 @@
 # SAMPolyBuild
 This repository is the code implementation of the paper ["SAMPolyBuild: Adapting the Segment Anything Model (SAM) for Polygonal Building Extraction"](https://www.sciencedirect.com/science/article/abs/pii/S0924271624003563) accepted by ISPRS Journal of Photogrammetry and Remote Sensing. Now only the prompt mode 
 is provided, the auto mode will be released soon.
+![overview](figs/overview.svg)
 
 ## Installation
 Conda virtual environment is recommended for installation. Please choose the appropriate version of torch and torchvision according to your CUDA version.
@@ -60,6 +61,20 @@ args.checkpoint = 'prompt_instance_spacenet.ckpt'
 ## Acknowledgement
 This project is developed based on the [Segment Anything Model (SAM)](https://github.com/facebookresearch/segment-anything) project. We thank the authors for their contributions.
 
+## Citation
+If you use the code of this project in your research, please refer to the bibtex below to cite SAMPolyBuild.
+```
+@article{wang2024sampolybuild,
+  title={SAMPolyBuild: Adapting the Segment Anything Model for polygonal building extraction},
+  author={Wang, Chenhao and Chen, Jingbo and Meng, Yu and Deng, Yupeng and Li, Kai and Kong, Yunlong},
+  journal={ISPRS Journal of Photogrammetry and Remote Sensing},
+  volume={218},
+  pages={707--720},
+  year={2024},
+  publisher={Elsevier},
+  doi = {10.1016/j.isprsjprs.2024.09.018}
+}
+```
 ## License
 
 This project is licensed under the [Apache 2.0 license](LICENSE).
