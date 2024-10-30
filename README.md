@@ -1,5 +1,6 @@
 # SAMPolyBuild
 This repository is the code implementation of the paper ["SAMPolyBuild: Adapting the Segment Anything Model (SAM) for Polygonal Building Extraction"](https://www.sciencedirect.com/science/article/abs/pii/S0924271624003563) accepted by ISPRS Journal of Photogrammetry and Remote Sensing. 
+
 ![overview](figs/overview.svg)
 
 ## Installation
@@ -14,6 +15,18 @@ cd pycocotools
 pip install .
 ```
 Download the SAM vit_b model from [here](https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth) and place it in the 'segment_anything' folder.
+
+
+## Inference
+You can use the trained model [prompt_interactive.pth](https://pan.baidu.com/s/1ak-nA032Mf342QHXD8JNug?pwd=8a0q) to predict the building polygons on the images. Change the **args.imgpth** to the corresponding image path and specify the bounding box prompt coordinates in the **bbox** and prompt point coordinates in the **prompt_point** (selectable).
+```shell
+python infer_poly_crop.py
+```
+If you run the code with GUI environment, you can use the following code to interactively select the bounding box and prompt points. Follow the instructions in the terminal to click the bounding box, prompt points (selectable) and generate the polygon.
+```shell
+python interactive_prompt.py
+```
+![gui](figs/interactive_gui.png)
 
 ## Dataset Preparation
 ### SpaceNet Vegas Dataset
