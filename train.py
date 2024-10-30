@@ -32,7 +32,7 @@ parser.add_argument('--img_encoder_lr', type=float, default=5e-6)
 parser.add_argument('--decoder_lr', type=float, default=5e-5)
 parser.add_argument('--weight_decay', type=float, default=1e-4)
 parser.add_argument('--val_epoch', type=int, default=4,help='validation frequency, every n epochs')
-parser.add_argument('--loss_weight', type=dict, default=dict(vmap=1.25,voff=5,mask=3,edge=0.6,iou=50))
+parser.add_argument('--loss_weight', type=dict, default=dict(vmap=1.25,voff=5,mask=1,edge=0.5,iou=5))
                     # type=str2dict, required=True)
 #model config:
 parser.add_argument('--model_type', type=str, default='vit_b',help='for image encoder')

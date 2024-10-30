@@ -5,11 +5,14 @@ is provided, the auto mode will be released soon.
 
 ## Installation
 Conda virtual environment is recommended for installation. Please choose the appropriate version of torch and torchvision according to your CUDA version.
+Run the following commands or run the 'install.sh' script.
 ```shell
 conda create -n sampoly python=3.10 -y
 source activate sampoly # or conda activate sampoly
 pip install torch==2.0.0+cu117 torchvision==0.15.1+cu117 --index-url https://download.pytorch.org/whl/cu117
 pip install -r requirements.txt
+cd pycocotools
+pip install .
 ```
 Download the SAM vit_b model from [here](https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth) and place it in the 'segment_anything' folder.
 
@@ -34,6 +37,7 @@ dataset
 ```
 
 ## Training
+### Prompt mode
 Single gpu:
 ```shell
 python train.py --config configs/prompt_instance_spacenet.json --gpus 0
@@ -42,24 +46,42 @@ Multi gpus:
 ```shell
 python train.py --config configs/prompt_instance_spacenet.json --gpus 0 1 --distributed
 ```
+### Auto mode
+First pretrain the model with the full-image feature input (the default method of the SAM) in prompt mode.
+```shell
+python train.py --config configs/prompt_fullimg_spacenet.json
+```
+Then load the model and train the auto mode. Change the pretrain_chkpt in the auto_spacenet.py to the path of the pretrained model.
+```shell
+python train_auto.py --config configs/auto_spacenet.py
+```
 
 ## Testing
+### Prompt mode
 Evaluate the model on the test set, and save the results:
 ```shell
 python test.py
 ```
 You need to change the **--task_name** to the corresponding training task name, and the other arguments will be set automatically according to training configuration.
 
-If you want to use our trained model to evaluate, you can download [prompt_instance_spacenet.ckpt](https://pan.baidu.com/s/11P6vUB6skRBxIcV7mKII1g?pwd=be8m)
-(extract code: be8m) and change the following code in the test.py:
+If you want to use our trained model to evaluate, you can download [prompt_instance_spacenet.pth](https://pan.baidu.com/s/1xQ3tKt2mOv55O0g3J-EJvQ?pwd=dz5d) and change the following code in the test.py:
 ```python
 args = load_args(parser,path='configs/prompt_instance_spacenet.json')
-args.checkpoint = 'prompt_instance_spacenet.ckpt'
+args.checkpoint = 'prompt_instance_spacenet.pth'
+```
+### Auto mode
+Set the **config** and **ckpt_path** args to the corresponding configuration and checkpoint path, and run the test.
+```shell
+python test_auto.py --config configs/auto_spacenet.py --ckpt_path work_dir/spacenet_auto/version_0/checkpoints/last.ckpt
+```
+You can download the trained model [auto_spacenet.pth](https://pan.baidu.com/s/1AIvaoI-hM0Ecd94S_sag4w?pwd=in3k) and test directly.
+```shell
+python test_auto.py --config configs/auto_spacenet.py --ckpt_path auto_spacenet.pth
 ```
 
-
 ## Acknowledgement
-This project is developed based on the [Segment Anything Model (SAM)](https://github.com/facebookresearch/segment-anything) project. We thank the authors for their contributions.
+This project is developed based on the [Segment Anything Model (SAM)](https://github.com/facebookresearch/segment-anything)
+ and [RSPrompter](https://github.com/KyanChen/RSPrompter) project. We thank the authors for their contributions.
 
 ## Citation
 If you use the code of this project in your research, please refer to the bibtex below to cite SAMPolyBuild.

@@ -1,6 +1,8 @@
 {
     "task_name": "prompt_fullimg_spacenet",
-    "epochs": 8,
+    "gpus": [0,1],
+    "distributed": true,
+    "epochs": 32,
     "batch_size": 1,
     "batch_size_val": 1,
     "num_workers": 2,

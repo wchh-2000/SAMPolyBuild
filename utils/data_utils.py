@@ -131,7 +131,7 @@ def generate_point_outside_polygon(polygon,centroid,gt_size=256):
         if i>3:
             return None
 
-def get_point_ann(junctions,gt_h,gt_w,gaussian=True):
+def get_point_ann(junctions,gt_h,gt_w,gaussian=True,sigma=1):
     #junctions: np.array(n,2) x,y (w,h) gt_w,gt_h(256*256)范围内 vmap, voff大小为gt_h,gt_w
     #获取顶点激活图vmap和偏移量图voff：
     vmap = np.zeros((gt_h, gt_w))
@@ -142,21 +142,15 @@ def get_point_ann(junctions,gt_h,gt_w,gaussian=True):
     off_x = junctions[:,0] - xint#0~1
     off_y = junctions[:,1] - yint
     if gaussian:
-        # sigma=1
-        # size = int(sigma*2)+1
-        # for i in range(len(xint)):
-        #     gaussian_map=np.zeros((gt_h, gt_w))
-        #     gaussian_map[yint[i], xint[i]] = 1
-        #     gaussian_map = cv2.GaussianBlur(gaussian_map, (size, size), sigma)
-        #     vmap = np.maximum(vmap, gaussian_map)
-        # vmap = vmap / np.max(vmap)
-        for x, y in zip(xint, yint):#每个点为中心，3*3邻域生成一个高斯图
-            for i in range(max(0, x - 1), min(gt_w, x + 2)):
-                for j in range(max(0, y - 1), min(gt_h, y + 2)):
-                    # 计算此点距离关键点的欧式距离平方
+        size = round(sigma * 3)
+        if size % 2 == 0:
+            size += 1
+        half_size = size // 2
+        for x, y in zip(xint, yint):
+            for i in range(max(0, x - half_size), min(gt_w, x + half_size + 1)):
+                for j in range(max(0, y - half_size), min(gt_h, y + half_size + 1)):
                     dist_sqare = (i - x) ** 2 + (j - y) ** 2
-                    value = np.exp(-0.5 * dist_sqare)# / sigma**2)#高斯函数的值
-                    # 叠加到总vmap 各点的不叠加，所以取最大
+                    value = np.exp(-0.5 * dist_sqare / sigma ** 2)
                     vmap[j, i] = max(vmap[j, i], value)
     else:
         vmap[yint, xint] = 1

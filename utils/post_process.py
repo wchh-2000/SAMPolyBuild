@@ -89,7 +89,7 @@ def process_single_instance(args):
     return poly, best_score, b
 
 def GetPolygons(pred_segs, pred_vmaps, pred_voffs, ori_size=(512, 512),
-                 max_distance=12, pos_transforms=None,pool=None):
+                 max_distance=10, pos_transforms=None,pool=None):
     """
     input: 模型预测的结果
         pred_segs: (b,h,w)含b个实例的多边形分割概率图(torch.sigmoid().cpu().numpy()结果) 已经resize到ori_size

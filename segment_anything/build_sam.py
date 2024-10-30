@@ -25,7 +25,6 @@ def build_sam(
     freeze_mask=False,
     image_size=1024,
     upconv=True,
-    remove_polyweight=False,
     selected_imgfeats=None,#用于Prompter中获取中间特征[2,4,6,7,8,9,10,11]
     **kwargs
 ):
@@ -96,9 +95,6 @@ def build_sam(
         state_dict=torch.load(checkpoint,map_location=device)
         if load_pl:
             state_dict=load_pl_model(state_dict)
-            if remove_polyweight:#for auto mode continue training
-                remove=['output_poly_upscaling','output_off_upscaling']
-                state_dict=remove_keys(state_dict,remove)
         else:
             if image_size!=1024:
                 state_dict=interp_weight(state_dict,image_size,encoder_global_attn_indexes)
