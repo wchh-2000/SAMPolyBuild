@@ -230,6 +230,9 @@ class BasePLer(pl.LightningModule, BaseModel):
         #     f.write(f"avg pos process time per batch {avg_pos}\n")
         evaluator.reset()
         # self._log_eval_metrics('test')
+    def on_predict_epoch_end(self) -> None:
+        self.predict_evaluator.compute()
+        self.predict_evaluator.reset()
 
     def on_train_epoch_end(self) -> None:
         pass

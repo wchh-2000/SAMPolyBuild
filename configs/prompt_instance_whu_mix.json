@@ -1,5 +1,7 @@
 {
-    "task_name": "prompt_instance_spacenet",
+    "task_name":"prompt_instance_whumix",
+    "gpus":[0,1],
+    "distributed": true,
     "epochs": 12,
     "batch_size": 40,
     "batch_size_val": 60,
@@ -17,7 +19,7 @@
     "multi_mask": true,
     "image_size": 224,
     "instance_input": true,
-    "dataset": "spacenet",
+    "dataset": "whu_mix",
     "ann_num": 10,
     "add_edge": true,
     "gaussian": true,

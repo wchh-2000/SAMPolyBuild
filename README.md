@@ -18,6 +18,7 @@ Download the SAM vit_b model from [here](https://dl.fbaipublicfiles.com/segment_
 
 
 ## Inference
+### Prompt mode
 You can use the trained model [prompt_interactive.pth](https://pan.baidu.com/s/1ak-nA032Mf342QHXD8JNug?pwd=8a0q) to predict the building polygons on the images. Change the **args.imgpth** to the corresponding image path and specify the bounding box prompt coordinates in the **bbox** and prompt point coordinates in the **prompt_point** (selectable).
 ```shell
 python infer_poly_crop.py
@@ -28,9 +29,24 @@ python interactive_prompt.py
 ```
 ![gui](figs/interactive_gui.png)
 
+### Auto mode
+You can use the trained model [auto_whumix.pth](https://pan.baidu.com/s/1s6aWDZ77t8Bt-aIHiEG9Gw?pwd=6wqn) to predict the building polygons on the images. Change the **args.img_dir** to the image directory that contains the images you want to predict, and the **args.img_suffix** to the corresponding image suffix.
+```shell
+python infer_auto.py
+```
+Show the predicted polygons and masks on the images (change the img_dir, dt_pth and img_suffix):
+```shell
+python utils/show_pred.py
+```
 ## Dataset Preparation
 ### SpaceNet Vegas Dataset
 We converted the original images of the SpaceNet dataset to 8-bit and the annotations to coco format, and divided them into training, validation, and test sets in the ratio of 8:1:1, which are available for download from [here](https://aistudio.baidu.com/datasetdetail/269168). Place the train, val, test folders in the 'dataset/spacenet' folder.
+### WHU-mix (vector) dataset
+The WHU-mix dataset can be download from [here](http://gpcv.whu.edu.cn/data/whu-mix%20(vector)/whu_mix(vector).html). Place the train, val, test1 and test2 folders in the 'dataset/whu_mix' folder, and run the preprocess code:
+```shell
+cd dataset
+python preprocess.py
+```
 
 ### Custom Dataset
 The custom dataset should be in the following format, or change the **train_dataset_pth**, **val_dataset_pth** in the train.py and **dataset_pth** in the test.py to the corresponding path.
@@ -90,7 +106,16 @@ You can download the trained model [auto_spacenet.pth](https://pan.baidu.com/s/1
 ```shell
 python test_auto.py --config configs/auto_spacenet.py --ckpt_path auto_spacenet.pth
 ```
+For the WHU-mix dataset, you can download the trained model [auto_whumix.pth](https://pan.baidu.com/s/1s6aWDZ77t8Bt-aIHiEG9Gw?pwd=6wqn) and test directly.
 
+For test2:
+```shell
+python test_auto.py --config configs/auto_whumix.py --ckpt_path auto_whumix.pth --gt_pth dataset/whu_mix/test2/ann.json
+```
+For test1: (change **test2** in configs/data_whu_mix.py to **test1**)
+```shell
+python test_auto.py --config configs/auto_whumix.py --ckpt_path auto_whumix.pth --gt_pth dataset/whu_mix/test1/ann.json --score_thr 0.3
+```
 ## Acknowledgement
 This project is developed based on the [Segment Anything Model (SAM)](https://github.com/facebookresearch/segment-anything)
  and [RSPrompter](https://github.com/KyanChen/RSPrompter) project. We thank the authors for their contributions.
