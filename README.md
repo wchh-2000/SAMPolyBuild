@@ -19,7 +19,7 @@ Download the SAM vit_b model from [here](https://dl.fbaipublicfiles.com/segment_
 
 ## Inference
 ### Prompt mode
-You can use the trained model [prompt_interactive.pth](https://pan.baidu.com/s/1ak-nA032Mf342QHXD8JNug?pwd=8a0q) to predict the building polygons on the images. Change the **args.imgpth** to the corresponding image path and specify the bounding box prompt coordinates in the **bbox** and prompt point coordinates in the **prompt_point** (selectable).
+You can use the trained model prompt_interactive.pth from [Baidu Cloud](https://pan.baidu.com/s/1ak-nA032Mf342QHXD8JNug?pwd=8a0q) / [Google Drive](https://drive.google.com/file/d/1meU9SCnXxwAuTYkK0GRtrzRsnAYDgG6B/view?usp=drive_link) to predict the building polygons on the images. Change the **args.imgpth** to the corresponding image path and specify the bounding box prompt coordinates in the **bbox** and prompt point coordinates in the **prompt_point** (selectable).
 ```shell
 python infer_poly_crop.py
 ```
@@ -30,7 +30,7 @@ python interactive_prompt.py
 ![gui](figs/interactive_gui.png)
 
 ### Auto mode
-You can use the trained model [auto_whumix.pth](https://pan.baidu.com/s/1s6aWDZ77t8Bt-aIHiEG9Gw?pwd=6wqn) to predict the building polygons on the images. Change the **args.img_dir** to the image directory that contains the images you want to predict, and the **args.img_suffix** to the corresponding image suffix.
+You can use the trained model auto_whumix.pth from [Baidu Cloud](https://pan.baidu.com/s/1s6aWDZ77t8Bt-aIHiEG9Gw?pwd=6wqn) / [Google Drive](https://drive.google.com/file/d/1VNyUl2CtV19NqxLhnE4LFw32VUvOD0J9/view?usp=drive_link) to predict the building polygons on the images. Change the **args.img_dir** to the image directory that contains the images you want to predict, and the **args.img_suffix** to the corresponding image suffix.
 ```shell
 python infer_auto.py
 ```
@@ -92,7 +92,7 @@ python test.py
 ```
 You need to change the **--task_name** to the corresponding training task name, and the other arguments will be set automatically according to training configuration.
 
-If you want to use our trained model to evaluate, you can download [prompt_instance_spacenet.pth](https://pan.baidu.com/s/1xQ3tKt2mOv55O0g3J-EJvQ?pwd=dz5d) and change the following code in the test.py:
+If you want to use our trained model to evaluate, you can download prompt_instance_spacenet.pth from [Baidu Cloud](https://pan.baidu.com/s/1xQ3tKt2mOv55O0g3J-EJvQ?pwd=dz5d) / [Google Drive](https://drive.google.com/file/d/1pQ_1HmUfCpJ_c6LZ3qcvbhabH6CpBgp4/view?usp=drive_link) and change the following code in the test.py:
 ```python
 args = load_args(parser,path='configs/prompt_instance_spacenet.json')
 args.checkpoint = 'prompt_instance_spacenet.pth'
@@ -102,11 +102,11 @@ Set the **config** and **ckpt_path** args to the corresponding configuration and
 ```shell
 python test_auto.py --config configs/auto_spacenet.py --ckpt_path work_dir/spacenet_auto/version_0/checkpoints/last.ckpt
 ```
-You can download the trained model [auto_spacenet.pth](https://pan.baidu.com/s/1AIvaoI-hM0Ecd94S_sag4w?pwd=in3k) and test directly.
+You can download the trained model auto_spacenet.pth from [Baidu Cloud](https://pan.baidu.com/s/1AIvaoI-hM0Ecd94S_sag4w?pwd=in3k) / [Google Drive](https://drive.google.com/file/d/1oJ2Pmip3B60lFSStIOeoAwnG0__YK29-/view?usp=drive_link) and test directly.
 ```shell
 python test_auto.py --config configs/auto_spacenet.py --ckpt_path auto_spacenet.pth
 ```
-For the WHU-mix dataset, you can download the trained model [auto_whumix.pth](https://pan.baidu.com/s/1s6aWDZ77t8Bt-aIHiEG9Gw?pwd=6wqn) and test directly.
+For the WHU-mix dataset, you can download the trained model auto_whumix.pth from [Baidu Cloud](https://pan.baidu.com/s/1s6aWDZ77t8Bt-aIHiEG9Gw?pwd=6wqn) / [Google Drive](https://drive.google.com/file/d/1VNyUl2CtV19NqxLhnE4LFw32VUvOD0J9/view?usp=drive_link) and test directly.
 
 For test2:
 ```shell
