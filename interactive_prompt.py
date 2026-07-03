@@ -16,6 +16,7 @@ from utils.test_utils import load_args
 from utils.post_process import GetPolygons,transform_polygon_to_original
 from utils.auto_result_bbox import infer_image_id, load_and_select_bbox
 from utils.negative_feature_refine import refine_mask_by_negative_features, save_negative_feature_debug
+from utils.interactive_result_store import InteractiveResultStore
 
 # %% Helper functions
 def show_box(box, ax):
@@ -74,6 +75,16 @@ parser.add_argument('--auto_min_score', type=float, default=0.0,
                     help='Minimum auto bbox score_cls/score for click selection.')
 parser.add_argument('--auto_max_center_distance', type=float, default=None,
                     help='Reject nearest auto bbox when its center is farther than this distance.')
+parser.add_argument('--initial_results', type=str, default=None,
+                    help='Global auto/final results to load as editable instances.')
+parser.add_argument('--final_results', type=str, default=None,
+                    help='Unified output JSON path. Defaults to final_interactive_results.json in result_pth.')
+parser.add_argument('--tile_offset_x', type=float, default=0.0,
+                    help='Global x offset of the displayed tile.')
+parser.add_argument('--tile_offset_y', type=float, default=0.0,
+                    help='Global y offset of the displayed tile.')
+parser.add_argument('--new_instance_bbox_size', type=int, default=128,
+                    help='Initial square bbox size for a positive click outside existing instances.')
 parser.add_argument('--debug_prompt_points', action='store_true',
                     help='Print prompt point coordinates and labels through the interactive prediction chain.')
 parser.add_argument('--refine_by_points', action='store_true',
@@ -115,6 +126,7 @@ os.makedirs(args.result_pth, exist_ok=True)
 mask_result_dir = join(args.result_pth, "interactive_masks")
 os.makedirs(mask_result_dir, exist_ok=True)
 interactive_result_path = join(args.result_pth, "interactive_results.json")
+final_result_path = args.final_results or join(args.result_pth, "final_interactive_results.json")
 
 # %% Load the model
 device = 'cuda:' + str(args.gpu)
@@ -140,6 +152,25 @@ prompt_labels = [1]  # To store prompt point labels (1 or 0). First point is bbo
 defined_bbox = False
 auto_bbox_enabled = args.auto_results is not None
 auto_image_id = args.auto_image_id or infer_image_id(args.imgpth)
+result_management_enabled = args.initial_results is not None
+result_store = InteractiveResultStore(
+    image_name=os.path.basename(args.imgpth),
+    tile_offset=(args.tile_offset_x, args.tile_offset_y),
+    output_path=final_result_path,
+)
+
+if result_management_enabled:
+    loaded_count, load_warnings = result_store.load_initial_results(
+        args.initial_results,
+        image_id=args.auto_image_id,
+        viewport_size=(image.shape[1], image.shape[0]),
+        min_score=args.auto_min_score,
+    )
+    for warning in load_warnings:
+        print(f"Warning: {warning}")
+    result_store.save()
+    print(f"Loaded {loaded_count} editable instances from {args.initial_results}")
+    print(f"Unified results will be saved to {final_result_path}")
 
 
 def reset_interaction():
@@ -895,7 +926,25 @@ def _print_negative_region_debug(
     print(f"[negative_region] use_previous_refined_mask={use_previous_refined_mask}")
 
 
-def save_interaction_result(instance_key, bbox, prompt_points, labels, polygon, mask):
+def save_interaction_result(instance_key, bbox, prompt_points, labels, polygon, mask, polygon_score=None):
+    if result_management_enabled:
+        user_points = [] if prompt_points is None else np.asarray(prompt_points).tolist()
+        user_labels = np.asarray(labels[1:], dtype=int).tolist()
+        if instance_key in result_store.instances:
+            result_store.update_from_local(
+                instance_key, bbox, polygon.tolist(), user_points, user_labels, polygon_score
+            )
+        else:
+            instance_key = result_store.create_prompt(
+                bbox, polygon.tolist(), user_points, user_labels, polygon_score
+            )
+        result_store.save()
+        print(
+            f"Unified result saved to {final_result_path} "
+            f"(instance={instance_key}, version={result_store.instances[instance_key]['version']})"
+        )
+        return instance_key
+
     mask_name = f"{instance_key}_latest_mask.png"
     mask_path = join(mask_result_dir, mask_name)
     mask_to_save = ((mask[0] > 0).astype(np.uint8) * 255)
@@ -917,6 +966,7 @@ def save_interaction_result(instance_key, bbox, prompt_points, labels, polygon, 
     with open(interactive_result_path, "w") as f:
         json.dump(payload, f, indent=2)
     print(f"Interactive result saved to {interactive_result_path} (instance={instance_key}, version={version})")
+    return instance_key
 
 
 def clear_instance_artists(instance_key):
@@ -928,7 +978,35 @@ def clear_instance_artists(instance_key):
     instance_artists[instance_key] = []
 
 
+def instance_color(instance):
+    if instance["status"] == "deleted":
+        return "gray"
+    return {"auto": "blue", "edited": "green", "prompt": "red"}.get(instance["source"], "blue")
+
+
+def draw_result_store():
+    if not result_management_enabled:
+        return
+    for instance_id in list(instance_artists):
+        clear_instance_artists(instance_id)
+    visible_instances = result_store.visible_instances((image.shape[1], image.shape[0]))
+    for instance in visible_instances:
+        instance_id = instance["instance_id"]
+        if instance["status"] == "deleted":
+            continue
+        polygon = np.asarray(result_store.global_to_local_polygon(instance["polygon"]), dtype=float)
+        selected = instance_id == current_instance_key
+        color = "yellow" if selected else instance_color(instance)
+        line, = ax.plot(polygon[:, 0], polygon[:, 1], color=color,
+                        linewidth=3 if selected else 1)
+        instance_artists[instance_id] = [line]
+    fig.canvas.draw_idle()
+
+
 def draw_latest_prediction(instance_key, bbox, prompt_point, labels, polygon):
+    if result_management_enabled:
+        draw_result_store()
+        return
     clear_instance_artists(instance_key)
     artists = []
     if prompt_point is not None:
@@ -960,7 +1038,50 @@ def on_click(event):
     global bbox_coords, selected_bbox, selected_auto_info, current_instance_key, prompt_coords, prompt_labels, defined_bbox
     if event.xdata is not None and event.ydata is not None:
         click_point = (int(event.xdata), int(event.ydata))
-        if auto_bbox_enabled and not defined_bbox:
+        if result_management_enabled and not defined_bbox:
+            selected_id = result_store.hit_test_local(click_point)
+            if selected_id is not None:
+                current_instance_key = selected_id
+                selected_instance = result_store.instances[selected_id]
+                local_bbox = result_store.global_to_local_bbox_xyxy(selected_instance["bbox"])
+                selected_bbox = [
+                    max(0, int(round(local_bbox[0]))),
+                    max(0, int(round(local_bbox[1]))),
+                    min(image.shape[1], int(round(local_bbox[2]))),
+                    min(image.shape[0], int(round(local_bbox[3]))),
+                ]
+                prompt_coords = [
+                    tuple(int(round(value)) for value in result_store.global_to_local_point(point))
+                    for point in selected_instance.get("prompt_points", [])
+                ]
+                prompt_labels = [1] + [int(label) for label in
+                                       selected_instance.get("prompt_labels", [])]
+                if len(prompt_labels) != len(prompt_coords) + 1:
+                    print("Warning: stored prompt points/labels mismatch; previous prompts were ignored.")
+                    prompt_coords = []
+                    prompt_labels = [1]
+                defined_bbox = True
+                draw_result_store()
+                print(f"Selected existing instance: {selected_id}")
+                print("Add positive/negative points and press Enter to refine, or press d to delete.")
+            else:
+                half_size = max(2, int(args.new_instance_bbox_size)) // 2
+                x, y = click_point
+                selected_bbox = [
+                    max(0, x - half_size), max(0, y - half_size),
+                    min(image.shape[1], x + half_size), min(image.shape[0], y + half_size),
+                ]
+                current_instance_key = None
+                prompt_coords.append(click_point)
+                prompt_labels.append(1)
+                defined_bbox = True
+                print(f"New prompt instance started at {click_point}; bbox={selected_bbox}")
+                print("Press Enter to predict, or add more labeled prompt points.")
+        elif result_management_enabled and defined_bbox:
+            prompt_coords.append(click_point)
+            print(f"Selected prompt point: {prompt_coords[-1]}")
+            print("Now press 1 for positive or 0 for negative label for the clicked point.")
+        elif auto_bbox_enabled and not defined_bbox:
             try:
                 selected_bbox, selected_auto_info = select_auto_bbox(click_point)
             except (FileNotFoundError, ValueError) as exc:
@@ -997,7 +1118,19 @@ def on_key(event):
         assign_prompt_label(int(event.key))
     if event.key == 'c':
         reset_interaction()
+        draw_result_store()
         print("Interaction cleared.")
+        return
+    if event.key == 'd' and result_management_enabled:
+        if current_instance_key is None or current_instance_key not in result_store.instances:
+            print("No existing instance is selected for deletion.")
+            return
+        deleted_id = current_instance_key
+        result_store.mark_deleted(deleted_id)
+        result_store.save()
+        reset_interaction()
+        draw_result_store()
+        print(f"Instance marked deleted and saved: {deleted_id}")
         return
     if event.key == 'enter' and (selected_bbox is not None or len(bbox_coords) == 2):
         # Make prediction
@@ -1111,7 +1244,7 @@ def on_key(event):
 
         # Post-process from the final mask, after all enabled refinements.
         cache_refined_mask(current_instance_key, mask)
-        polygon_crop, score, _ = polygon_from_mask(mask, pred_vmap, pred_voff, crop_w, crop_h)
+        polygon_crop, polygon_score, _ = polygon_from_mask(mask, pred_vmap, pred_voff, crop_w, crop_h)
         if args.negative_feature_refine:
             save_negative_feature_debug(
                 args.result_pth,
@@ -1125,7 +1258,9 @@ def on_key(event):
             print(f"Negative feature refinement debug images saved to {args.result_pth}")
 
         polygon = transform_polygon_to_original(polygon_crop, pos_transform)
-        save_interaction_result(current_instance_key, bbox, prompt_point, label, polygon, mask)
+        current_instance_key = save_interaction_result(
+            current_instance_key, bbox, prompt_point, label, polygon, mask, polygon_score
+        )
 
         # Visualization
         draw_latest_prediction(current_instance_key, bbox, prompt_point, label, polygon)
@@ -1161,7 +1296,11 @@ hline = Line2D([0, image.shape[1]], [0, 0], color='red', lw=1, linestyle='--')
 vline = Line2D([0, 0], [0, image.shape[0]], color='red', lw=1, linestyle='--')
 ax.add_line(hline)
 ax.add_line(vline)
-if auto_bbox_enabled:
+if result_management_enabled:
+    draw_result_store()
+    print("Result management enabled. Click a polygon to select it, or click empty space to add one.")
+    print("Keys: 1/0 label point, Enter predict, d delete selected instance, c clear selection.")
+elif auto_bbox_enabled:
     print(f"Auto bbox mode enabled. Using image_id={auto_image_id}. Click one building to select a bbox.")
 else:
     print("Click on two points (top left and bottom right) to define bounding box.")
