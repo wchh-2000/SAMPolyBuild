@@ -350,6 +350,28 @@ For test1: (change **test2** in configs/data_whu_mix.py to **test1**)
 ```shell
 python test_auto.py --config configs/auto_whumix.py --ckpt_path auto_whumix.pth --gt_pth dataset/whu_mix/test1/ann.json --score_thr 0.3
 ```
+
+### Interactive result management
+
+`interactive_prompt.py` can load global polygon results and manage auto, edited,
+prompt-added, and deleted instances in one JSON file. For a tile image, provide
+its global upper-left offset:
+
+```shell
+python interactive_prompt.py \
+  --imgpth path/to/tile.png \
+  --initial_results path/to/results_global_evaluated.json \
+  --tile_offset_x 1024 \
+  --tile_offset_y 2048 \
+  --final_results path/to/final_interactive_results.json
+```
+
+Click an existing polygon to select it. Add prompt points, label the latest point
+with `1` or `0`, and press Enter to refine. A click outside all instances starts a
+new prompt instance with a square bbox controlled by `--new_instance_bbox_size`.
+Press `d` to mark the selected instance as deleted, or `c` to clear the selection.
+The output retains both active and deleted instances in global coordinates.
+
 ## Acknowledgement
 This project is developed based on the [Segment Anything Model (SAM)](https://github.com/facebookresearch/segment-anything)
  and [RSPrompter](https://github.com/KyanChen/RSPrompter) project. We thank the authors for their contributions.
