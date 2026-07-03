@@ -1,8 +1,8 @@
 import argparse
-import os
+from pathlib import Path
+
 from mmengine.config import Config
 from mmpl.engine.runner import PLRunner
-import os.path as osp
 from mmpl.registry import RUNNERS
 from mmpl.utils import register_all_modules
 register_all_modules()
@@ -16,19 +16,46 @@ def parse_args():
     parser.add_argument('--img_suffix', default='.tif')
     parser.add_argument('--score_thr', default=0.1, type=float, help='score threshold')
     parser.add_argument('--gpu', default=0, type=int, help='gpu id')
+    parser.add_argument('--batch_size', default=6, type=int, help='predict batch size')
+    parser.add_argument('--num_workers', default=2, type=int, help='predict dataloader workers')
     args = parser.parse_args()
     return args
 
-def main():
-    args = parse_args()
-    cfg = Config.fromfile(args.config)
-    result_pth=f'{args.work_dir}/{cfg.task_name}/results.json'
-    os.makedirs(f'{args.work_dir}/{cfg.task_name}',exist_ok=True)
+
+def run_auto_inference(
+        config,
+        ckpt_path,
+        img_dir,
+        work_dir='work_dir',
+        img_suffix='.tif',
+        score_thr=0.1,
+        gpu=0,
+        batch_size=6,
+        num_workers=2,
+        status='predict',
+        result_dir=None,
+        replace_predict_loader=False):
+    if batch_size <= 0:
+        raise ValueError('batch_size must be positive.')
+    if num_workers < 0:
+        raise ValueError('num_workers must be non-negative.')
+
+    cfg = Config.fromfile(config)
+    base_work_dir = (
+        Path(work_dir)
+        if work_dir is not None
+        else Path('./work_dirs') / Path(config).stem
+    )
+    result_dir = Path(result_dir or base_work_dir / cfg.task_name)
+    result_dir.mkdir(parents=True, exist_ok=True)
+    result_pth = str(result_dir / 'results.json')
+    results_mask_pth = result_pth.replace('results', 'results_mask')
+    Path(results_mask_pth).parent.mkdir(parents=True, exist_ok=True)
     cfg.model_cfg.hyperparameters.evaluator=dict(predict_evaluator=
                                                  dict(type='CocoMetric',
                                             result_pth=result_pth,
                                             evaluate=False,
-                                            score_thr=args.score_thr,
+                                            score_thr=score_thr,
                                             result_type=['mask','polygon'])
                                     )
     max_per_img=100
@@ -44,18 +71,17 @@ def main():
         wait_time=1.,
         test_out_dir='visualization')
     cfg.trainer_cfg['logger'] = None
-    cfg.trainer_cfg.default_root_dir=f'{args.work_dir}/debug/'
-    if 'predict_loader' not in cfg.datamodule_cfg:
+    if replace_predict_loader or 'predict_loader' not in cfg.datamodule_cfg:
         cfg.datamodule_cfg.predict_loader = dict(
-            batch_size=6,
-            num_workers=2,
-            persistent_workers=True,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            persistent_workers=num_workers > 0,
             pin_memory=True,
             dataset=dict(
                 type='PredictDataset',
-                data_root=args.img_dir,
+                data_root=str(img_dir),
                 # data_prefix=dict(img_path=''),
-                img_suffix=args.img_suffix,
+                img_suffix=img_suffix,
                 pipeline=[
                     dict(type='mmdet.LoadImageFromFile', backend_args=None),
                     dict(type='mmdet.Resize', scale=(1024, 1024)),
@@ -65,19 +91,36 @@ def main():
                                 'scale_factor'))
                 ],
                 backend_args=None))
-    cfg.trainer_cfg.devices=[args.gpu]
+    cfg.trainer_cfg.devices=[gpu]
     cfg.trainer_cfg.use_distributed_sampler=False
-    if args.work_dir is not None:
-        cfg.trainer_cfg['default_root_dir'] = args.work_dir
-    elif cfg.trainer_cfg.get('default_root_dir', None) is None:
-        # use config filename as default work_dir if cfg.work_dir is None
-        cfg.trainer_cfg['default_root_dir'] = osp.join('./work_dirs', osp.splitext(osp.basename(args.config))[0])
+    cfg.trainer_cfg['default_root_dir'] = str(base_work_dir)
 
     if 'runner_type' not in cfg:
         runner = PLRunner.from_cfg(cfg)
     else:
         runner = RUNNERS.build(cfg)
-    runner.run(args.status, ckpt_path=args.ckpt_path)
+    runner.run(status, ckpt_path=str(ckpt_path))
+    return {
+        'task_name': cfg.task_name,
+        'results_path': result_pth,
+        'results_mask_path': results_mask_pth,
+    }
+
+
+def main():
+    args = parse_args()
+    run_auto_inference(
+        config=args.config,
+        ckpt_path=args.ckpt_path,
+        img_dir=args.img_dir,
+        work_dir=args.work_dir,
+        img_suffix=args.img_suffix,
+        score_thr=args.score_thr,
+        gpu=args.gpu,
+        batch_size=args.batch_size,
+        num_workers=args.num_workers,
+        status=args.status,
+    )
 
 
 if __name__ == '__main__':
