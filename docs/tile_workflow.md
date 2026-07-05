@@ -175,3 +175,20 @@ with no detections receive a valid empty result. The normal path performs one
 batch inference for all pending tiles; if that batch fails, the workflow retries
 tiles individually and records concrete errors without stopping the remaining
 tiles.
+
+## Tile review
+
+The stage-3 Matplotlib viewer loads edited results first, falls back to Auto
+results, and creates an empty TileResult when neither exists:
+
+```bash
+python review_tiles.py \
+  --manifest path/to/output/manifests/manifest.json \
+  --auto-results path/to/output/auto_results \
+  --edited-results path/to/output/edited_results
+```
+
+Use `N`/Right and `P`/Left to save and navigate, click a polygon to select it,
+`D` to mark it deleted, `U` to restore it, `S` to save, `H` for help, and
+`Q`/Escape to save and quit. `--start-tile tile_0030` overrides the default
+resume position, which is the first tile without an edited JSON file.
