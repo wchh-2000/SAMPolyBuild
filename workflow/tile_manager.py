@@ -57,6 +57,7 @@ class PolygonRecord:
     source: str
     score: float | None
     points_tile: list[list[float]]
+    bbox_tile: list[float] = field(default_factory=list)
     points_global: list[list[float]] = field(default_factory=list)
     click_history: list[dict[str, Any]] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -76,6 +77,17 @@ class PolygonRecord:
             if not math.isfinite(self.score):
                 raise ValueError("Polygon score must be finite or null.")
         self.points_tile = _normalize_polygon(self.points_tile, "points_tile", required=True)
+        if self.bbox_tile:
+            if not isinstance(self.bbox_tile, (list, tuple)) or len(self.bbox_tile) != 4:
+                raise ValueError("bbox_tile must be [x_min, y_min, x_max, y_max].")
+            try:
+                self.bbox_tile = [float(value) for value in self.bbox_tile]
+            except (TypeError, ValueError) as exc:
+                raise ValueError("bbox_tile values must be numeric.") from exc
+            if not all(math.isfinite(value) for value in self.bbox_tile):
+                raise ValueError("bbox_tile values must be finite.")
+            if self.bbox_tile[2] < self.bbox_tile[0] or self.bbox_tile[3] < self.bbox_tile[1]:
+                raise ValueError("bbox_tile maximum coordinates must not be below minima.")
         self.points_global = _normalize_polygon(
             self.points_global, "points_global", required=False
         )
@@ -95,6 +107,7 @@ class PolygonRecord:
             "source": self.source,
             "score": self.score,
             "points_tile": self.points_tile,
+            "bbox_tile": self.bbox_tile,
             "points_global": self.points_global,
             "click_history": self.click_history,
             "metadata": self.metadata,
@@ -116,6 +129,7 @@ class PolygonRecord:
             source=payload["source"],
             score=payload["score"],
             points_tile=payload["points_tile"],
+            bbox_tile=payload.get("bbox_tile", []),
             points_global=payload.get("points_global", []),
             click_history=payload.get("click_history", []),
             metadata=payload.get("metadata", {}),
@@ -129,6 +143,8 @@ class TileResult:
     tile_id: str
     offset: list[float]
     polygons: list[PolygonRecord] = field(default_factory=list)
+    image_path: Path | None = None
+    error: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
     schema_version: int = SCHEMA_VERSION
 
@@ -154,6 +170,14 @@ class TileResult:
             )
         if not isinstance(self.metadata, dict):
             raise ValueError("TileResult metadata must be an object.")
+        if self.image_path is not None:
+            self.image_path = Path(self.image_path)
+            if self.image_path.is_absolute() or self.image_path.as_posix() in ("", "."):
+                raise ValueError("TileResult image_path must be a non-empty relative path.")
+        if self.error is not None:
+            self.error = str(self.error).strip()
+            if not self.error:
+                self.error = None
         self.polygons = [
             polygon if isinstance(polygon, PolygonRecord) else PolygonRecord.from_dict(polygon)
             for polygon in self.polygons
@@ -166,9 +190,14 @@ class TileResult:
             raise ValueError(f"Polygons reference a different tile_id: {mismatched}")
 
     @classmethod
-    def create_empty(cls, tile_id: str, offset: list[float]) -> "TileResult":
+    def create_empty(
+        cls,
+        tile_id: str,
+        offset: list[float],
+        image_path: Path | None = None,
+    ) -> "TileResult":
         """Create a valid tile result before inference or editing has produced polygons."""
-        return cls(tile_id=tile_id, offset=offset, polygons=[])
+        return cls(tile_id=tile_id, offset=offset, polygons=[], image_path=image_path)
 
     def to_dict(self) -> dict[str, Any]:
         """Return the canonical versioned TileResult JSON object."""
@@ -176,7 +205,9 @@ class TileResult:
             "schema_version": self.schema_version,
             "tile_id": self.tile_id,
             "offset": self.offset,
+            "image_path": self.image_path.as_posix() if self.image_path is not None else None,
             "polygons": [polygon.to_dict() for polygon in self.polygons],
+            "error": self.error,
             "metadata": self.metadata,
         }
 
@@ -195,6 +226,11 @@ class TileResult:
             tile_id=payload["tile_id"],
             offset=payload["offset"],
             polygons=[PolygonRecord.from_dict(item) for item in payload["polygons"]],
+            image_path=(
+                Path(payload["image_path"])
+                if payload.get("image_path") is not None else None
+            ),
+            error=payload.get("error"),
             metadata=payload.get("metadata", {}),
             schema_version=payload.get("schema_version", SCHEMA_VERSION),
         )
