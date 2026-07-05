@@ -127,10 +127,30 @@ conversion are deliberately outside this foundation.
 
 ## Later development stages
 
-1. Adapt `tools/tile_large_image.py` to emit `TileManifest` without changing
-   this schema.
+1. `tools/tile_large_image.py` emits this `TileManifest` at
+   `output/manifests/manifest.json`. It also retains `output/tiles_manifest.json`
+   for compatibility with existing inference and remapping tools.
 2. Add adapters that convert existing Auto output into one `TileResult` per tile;
    do not modify Auto inference.
 3. Store click and refinement output in `edited_results/`.
 4. Populate `points_global` through the coordinate helpers.
 5. Add final collection, validation, and GIS export under `final_results/`.
+
+## Large-image tiling command
+
+The CLI accepts both hyphenated workflow arguments and the original underscore
+spellings. GeoTIFF remains the default output because it preserves geospatial
+metadata; PNG and JPEG are optional output formats.
+
+```bash
+python tile_large_image.py \
+  --input path/to/large_image.tif \
+  --output-dir path/to/output \
+  --tile-size 1024 \
+  --overlap 256 \
+  --tile-format png
+```
+
+The command writes row-major, continuously numbered tiles under `output/tiles/`,
+the canonical manifest under `output/manifests/`, and the legacy compatibility
+manifest at `output/tiles_manifest.json`.
