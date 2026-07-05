@@ -154,3 +154,24 @@ python tile_large_image.py \
 The command writes row-major, continuously numbered tiles under `output/tiles/`,
 the canonical manifest under `output/manifests/`, and the legacy compatibility
 manifest at `output/tiles_manifest.json`.
+
+## Per-tile Auto inference
+
+The stage-2 command reuses `infer_auto.run_auto_inference()` and converts its
+existing COCO polygon list into one canonical `TileResult` per tile:
+
+```bash
+python infer_tiles_auto.py \
+  --manifest path/to/output/manifests/manifest.json \
+  --output-dir path/to/output/auto_results \
+  --config configs/auto_whumix.py \
+  --checkpoint auto_whumix.pth \
+  --device cuda:0 \
+  --score-threshold 0.5
+```
+
+Existing tile JSON files are skipped unless `--overwrite` is supplied. Tiles
+with no detections receive a valid empty result. The normal path performs one
+batch inference for all pending tiles; if that batch fails, the workflow retries
+tiles individually and records concrete errors without stopping the remaining
+tiles.

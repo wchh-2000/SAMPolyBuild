@@ -34,7 +34,8 @@ def run_auto_inference(
         num_workers=2,
         status='predict',
         result_dir=None,
-        replace_predict_loader=False):
+        replace_predict_loader=False,
+        device=None):
     if batch_size <= 0:
         raise ValueError('batch_size must be positive.')
     if num_workers < 0:
@@ -76,7 +77,7 @@ def run_auto_inference(
             batch_size=batch_size,
             num_workers=num_workers,
             persistent_workers=num_workers > 0,
-            pin_memory=True,
+            pin_memory=device != 'cpu',
             dataset=dict(
                 type='PredictDataset',
                 data_root=str(img_dir),
@@ -91,7 +92,16 @@ def run_auto_inference(
                                 'scale_factor'))
                 ],
                 backend_args=None))
-    cfg.trainer_cfg.devices=[gpu]
+    # Preserve the historical GPU behavior unless the reusable workflow adapter
+    # explicitly requests a device. This adds CPU orchestration without changing
+    # model construction, weights, or prediction post-processing.
+    if device == 'cpu':
+        cfg.trainer_cfg.accelerator = 'cpu'
+        cfg.trainer_cfg.devices = 1
+    else:
+        if device == 'cuda':
+            cfg.trainer_cfg.accelerator = 'gpu'
+        cfg.trainer_cfg.devices=[gpu]
     cfg.trainer_cfg.use_distributed_sampler=False
     cfg.trainer_cfg['default_root_dir'] = str(base_work_dir)
 
