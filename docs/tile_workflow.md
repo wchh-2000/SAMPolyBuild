@@ -190,5 +190,23 @@ python review_tiles.py \
 
 Use `N`/Right and `P`/Left to save and navigate, click a polygon to select it,
 `D` to mark it deleted, `U` to restore it, `S` to save, `H` for help, and
-`Q`/Escape to save and quit. `--start-tile tile_0030` overrides the default
+`Q`/Escape to save and quit. Press `A` to enter Add mode and click one missed
+building; the new click polygon is written only to `edited_results`. Escape
+cancels Add mode without closing the viewer. `--start-tile tile_0030` overrides the default
 resume position, which is the first tile without an edited JSON file.
+
+Use the deterministic mock adapter to verify the Add workflow without model
+dependencies:
+
+```bash
+python review_tiles.py \
+  --manifest path/to/output/manifests/manifest.json \
+  --auto-results path/to/output/auto_results \
+  --edited-results path/to/output/edited_results \
+  --mock-prompt \
+  --add-bbox-size 256
+```
+
+For real Prompt inference, replace `--mock-prompt` with `--config`,
+`--checkpoint`, and optionally `--device cuda:0`. The predictor is initialized
+on the first Add click and reused for later clicks.

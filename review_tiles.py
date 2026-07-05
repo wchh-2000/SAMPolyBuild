@@ -6,7 +6,13 @@ from pathlib import Path
 
 from utils.image_tile_reader import ImageTileReader
 from workflow.manifest import TileManifest
+from workflow.prompt_infer_adapter import (
+    make_add_bbox,
+    run_mock_prompt_inference,
+    run_prompt_inference_on_tile,
+)
 from workflow.tile_review import (
+    add_click_polygon,
     first_review_index,
     load_review_result,
     polygon_status_counts,
@@ -21,12 +27,14 @@ from workflow.tile_review import (
 HELP_TEXT = """Tile review shortcuts:
   N / Right Arrow  save and open next tile
   P / Left Arrow   save and open previous tile
+  A                enter Add mode for a missed building
   D                mark selected polygon deleted
   U                restore selected polygon to active
   S                save current tile
-  Q / Esc          save and quit
+  Esc              cancel Add mode, otherwise save and quit
+  Q                save and quit
   H                print this help
-  Left click       select polygon
+  Left click       select polygon, or add a positive point in Add mode
 """
 
 
@@ -40,6 +48,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--selection-distance", type=float, default=10.0,
         help="Maximum pixel distance for nearest-boundary selection.",
+    )
+    parser.add_argument("--config", default=None, help="Prompt JSON config path for Add mode.")
+    parser.add_argument("--checkpoint", default=None, help="Prompt checkpoint path for Add mode.")
+    parser.add_argument("--device", default="cuda", help="Prompt device: cpu, cuda, or cuda:N.")
+    parser.add_argument(
+        "--add-bbox-size", type=int, default=256,
+        help="Centered bbox side length used for an Add-mode click.",
+    )
+    parser.add_argument(
+        "--mock-prompt", action="store_true",
+        help="Generate a deterministic rectangle without loading a model.",
     )
     return parser.parse_args()
 
@@ -77,6 +96,8 @@ class TileReviewApplication:
         """Initialize session state and connect existing Matplotlib event hooks."""
         if args.selection_distance < 0:
             raise ValueError("--selection-distance must be non-negative.")
+        if args.add_bbox_size <= 0:
+            raise ValueError("--add-bbox-size must be positive.")
         self.args = args
         self.manifest_path = manifest_path
         self.manifest = manifest
@@ -89,6 +110,8 @@ class TileReviewApplication:
         self.result = None
         self.from_edited = False
         self.selected_polygon_id = None
+        self.mode = "select"
+        self.modified = False
         self._closing = False
         self.fig, self.ax = plt.subplots(figsize=(10, 10))
         self.fig.canvas.mpl_connect("button_press_event", self.on_click)
@@ -113,10 +136,13 @@ class TileReviewApplication:
             self.paths.edited_results,
         )
         image_path = resolve_tile_image(self.paths.workspace, self.tile.image_path)
+        self.image_path = image_path
         with ImageTileReader(image_path, bands=(1, 2, 3)) as reader:
             image = reader.read_tile(0, 0, reader.width, reader.height)
         self.image = display_image(image, self.np)
         self.selected_polygon_id = None
+        self.mode = "select"
+        self.modified = False
         self.draw_overlay()
 
     def draw_overlay(self):
@@ -140,9 +166,21 @@ class TileReviewApplication:
             )
         active, deleted = polygon_status_counts(self.result)
         source_label = "edited_results" if self.from_edited else "auto/empty"
+        modified_label = "  |  modified" if self.modified else ""
         self.ax.set_title(
             f"{self.tile.tile_id}  |  {self.index + 1}/{len(self.manifest.tiles)}  |  "
-            f"active={active} deleted={deleted}  |  source={source_label}"
+            f"active={active} deleted={deleted}  |  source={source_label}{modified_label}"
+        )
+        self.ax.text(
+            0.01,
+            0.99,
+            f"Mode: {self.mode.title()}",
+            transform=self.ax.transAxes,
+            ha="left",
+            va="top",
+            color="white",
+            fontsize=11,
+            bbox={"facecolor": "black", "alpha": 0.65, "edgecolor": "none"},
         )
         self.ax.axis("off")
         self.fig.canvas.draw_idle()
@@ -151,6 +189,7 @@ class TileReviewApplication:
         """Save current review state and mark subsequent redraws as edited."""
         path = save_review_result(self.result, self.paths.edited_results)
         self.from_edited = True
+        self.modified = False
         print(f"Saved {self.tile.tile_id}: {path}")
         return path
 
@@ -169,6 +208,9 @@ class TileReviewApplication:
         """Select a containing polygon or nearest boundary for a left-button click."""
         if event.inaxes != self.ax or event.button != 1 or event.xdata is None or event.ydata is None:
             return
+        if self.mode == "add":
+            self.add_polygon_at_click((float(event.xdata), float(event.ydata)))
+            return
         polygon = select_polygon_at_point(
             self.result,
             (float(event.xdata), float(event.ydata)),
@@ -184,12 +226,57 @@ class TileReviewApplication:
             )
         self.draw_overlay()
 
+    def add_polygon_at_click(self, click_point):
+        """Run mock/real Prompt inference and append one missed building."""
+        image_height, image_width = self.image.shape[:2]
+        click = (
+            min(max(int(round(click_point[0])), 0), image_width - 1),
+            min(max(int(round(click_point[1])), 0), image_height - 1),
+        )
+        try:
+            bbox = make_add_bbox(
+                click,
+                image_width,
+                image_height,
+                self.args.add_bbox_size,
+            )
+            if self.args.mock_prompt:
+                prediction = run_mock_prompt_inference([click], [], bbox)
+            else:
+                if not self.args.config or not self.args.checkpoint:
+                    print(
+                        "Add mode requires --config and --checkpoint, or use --mock-prompt."
+                    )
+                    return
+                prediction = run_prompt_inference_on_tile(
+                    image_path=self.image_path,
+                    positive_points=[click],
+                    negative_points=[],
+                    bbox=bbox,
+                    config_path=Path(self.args.config),
+                    checkpoint_path=Path(self.args.checkpoint),
+                    device=self.args.device,
+                )
+            if prediction is None:
+                raise ValueError("Prompt inference returned no polygon.")
+            polygon = add_click_polygon(self.result, prediction, click)
+        except Exception as exc:
+            print(f"Add polygon failed: {type(exc).__name__}: {exc}")
+            return
+
+        self.selected_polygon_id = polygon.id
+        self.modified = True
+        self.mode = "select"
+        print(f"Added polygon from click: id={polygon.id}, score={polygon.score}")
+        self.draw_overlay()
+
     def change_selected_status(self, status):
         """Apply a soft-delete or restore operation to the current selection."""
         if self.selected_polygon_id is None:
             print("No polygon is selected.")
             return
         polygon = set_polygon_status(self.result, self.selected_polygon_id, status)
+        self.modified = True
         print(f"Polygon {polygon.id} status changed to {polygon.status}.")
         self.draw_overlay()
 
@@ -204,8 +291,17 @@ class TileReviewApplication:
             self.change_selected_status("deleted")
         elif key == "u":
             self.change_selected_status("active")
+        elif key == "a":
+            self.mode = "add"
+            self.selected_polygon_id = None
+            print("Add mode enabled. Left-click one missed building; Esc cancels.")
+            self.draw_overlay()
         elif key == "s":
             self.save_current_tile()
+            self.draw_overlay()
+        elif key == "escape" and self.mode == "add":
+            self.mode = "select"
+            print("Add mode cancelled.")
             self.draw_overlay()
         elif key in ("q", "escape"):
             self.save_current_tile()

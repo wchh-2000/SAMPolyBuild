@@ -112,6 +112,62 @@ def set_polygon_status(result: TileResult, polygon_id: str, status: str) -> Poly
     raise KeyError(f"Polygon not found in {result.tile_id}: {polygon_id}")
 
 
+def next_polygon_id(result: TileResult) -> str:
+    """Return the next collision-free canonical polygon id for one tile."""
+    prefix = f"{result.tile_id}_poly_"
+    maximum = 0
+    existing = {polygon.id for polygon in result.polygons}
+    for polygon_id in existing:
+        if not polygon_id.startswith(prefix):
+            continue
+        suffix = polygon_id[len(prefix):]
+        if suffix.isdigit():
+            maximum = max(maximum, int(suffix))
+    sequence = maximum + 1
+    candidate = f"{prefix}{sequence:04d}"
+    while candidate in existing:
+        sequence += 1
+        candidate = f"{prefix}{sequence:04d}"
+    return candidate
+
+
+def add_click_polygon(
+    result: TileResult,
+    prediction: dict,
+    click_point: tuple[float, float],
+) -> PolygonRecord:
+    """Validate and append one click prediction without partial mutation."""
+    if not isinstance(prediction, dict):
+        raise ValueError("Prompt prediction must be a JSON-style object.")
+    required = ("points_tile", "score", "bbox_tile")
+    missing = [field for field in required if field not in prediction]
+    if missing:
+        raise ValueError(f"Prompt prediction is missing fields: {missing}")
+    if not isinstance(click_point, (list, tuple)) or len(click_point) != 2:
+        raise ValueError("click_point must be an [x, y] pair.")
+
+    metadata = dict(prediction.get("metadata") or {})
+    metadata["created_by"] = "review_tiles_add_mode"
+    polygon = PolygonRecord(
+        id=next_polygon_id(result),
+        tile_id=result.tile_id,
+        status="active",
+        source="click",
+        score=prediction["score"],
+        points_tile=prediction["points_tile"],
+        bbox_tile=prediction["bbox_tile"],
+        points_global=[],
+        click_history=[{
+            "type": "positive",
+            "point": [float(click_point[0]), float(click_point[1])],
+            "mode": "add",
+        }],
+        metadata=metadata,
+    )
+    result.polygons.append(polygon)
+    return polygon
+
+
 def polygon_status_counts(result: TileResult) -> tuple[int, int]:
     """Return active and deleted polygon counts for the review overlay."""
     active = sum(polygon.status == "active" for polygon in result.polygons)
