@@ -210,3 +210,9 @@ python review_tiles.py \
 For real Prompt inference, replace `--mock-prompt` with `--config`,
 `--checkpoint`, and optionally `--device cuda:0`. The predictor is initialized
 on the first Add click and reused for later clicks.
+
+The viewer retains the current image artist while selection, deletion, restore,
+and Add-mode overlays change. Deleted polygons use a red solid outline to avoid
+expensive dashed-path rendering on detailed polygons. Runtime messages prefixed
+with `[review]` report Prompt inference, JSON save, tile load, navigation, and
+actual canvas-render durations for diagnosing slow Linux GUI sessions.

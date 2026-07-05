@@ -2,6 +2,7 @@
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 from utils.image_tile_reader import ImageTileReader
@@ -113,10 +114,15 @@ class TileReviewApplication:
         self.mode = "select"
         self.modified = False
         self._closing = False
+        self._image_artist = None
+        self._polygon_artists = []
+        self._mode_artist = None
+        self._draw_started_at = None
         self.fig, self.ax = plt.subplots(figsize=(10, 10))
         self.fig.canvas.mpl_connect("button_press_event", self.on_click)
         self.fig.canvas.mpl_connect("key_press_event", self.on_key)
         self.fig.canvas.mpl_connect("close_event", self.on_close)
+        self.fig.canvas.mpl_connect("draw_event", self.on_draw)
         try:
             self.fig.canvas.manager.set_window_title("SAMPoly Tile Review")
         except AttributeError:
@@ -130,6 +136,7 @@ class TileReviewApplication:
 
     def load_current_tile(self):
         """Load current image and edited/auto/empty result, then redraw the overlay."""
+        started_at = time.perf_counter()
         self.result, self.from_edited = load_review_result(
             self.tile,
             self.paths.auto_results,
@@ -143,27 +150,45 @@ class TileReviewApplication:
         self.selected_polygon_id = None
         self.mode = "select"
         self.modified = False
-        self.draw_overlay()
+        self.draw_overlay(reset_image=True)
+        print(
+            f"[review] tile load completed in {time.perf_counter() - started_at:.3f}s: "
+            f"{self.tile.tile_id}"
+        )
 
-    def draw_overlay(self):
-        """Draw image, active/deleted polygons, selection highlight, and status title."""
-        self.ax.clear()
-        self.ax.imshow(self.image)
+    def draw_overlay(self, reset_image=False):
+        """Update polygon artists while retaining the current tile image when possible."""
+        started_at = time.perf_counter()
+        if reset_image or self._image_artist is None:
+            self.ax.clear()
+            self._image_artist = self.ax.imshow(self.image)
+            self._polygon_artists = []
+            self._mode_artist = None
+            self.ax.axis("off")
+        else:
+            for artist in self._polygon_artists:
+                artist.remove()
+            self._polygon_artists = []
+            if self._mode_artist is not None:
+                self._mode_artist.remove()
+                self._mode_artist = None
+
         for polygon in self.result.polygons:
             points = self.np.asarray(polygon.points_tile, dtype=float)
             selected = polygon.id == self.selected_polygon_id
             if selected:
                 color, linewidth, linestyle = "yellow", 3.0, "-"
             elif polygon.status == "deleted":
-                color, linewidth, linestyle = "gray", 1.2, "--"
+                color, linewidth, linestyle = "red", 1.2, "-"
             elif polygon.status == "hidden":
                 color, linewidth, linestyle = "dimgray", 1.0, ":"
             else:
                 color, linewidth, linestyle = "lime", 1.5, "-"
-            self.ax.plot(
+            artists = self.ax.plot(
                 points[:, 0], points[:, 1],
                 color=color, linewidth=linewidth, linestyle=linestyle,
             )
+            self._polygon_artists.extend(artists)
         active, deleted = polygon_status_counts(self.result)
         source_label = "edited_results" if self.from_edited else "auto/empty"
         modified_label = "  |  modified" if self.modified else ""
@@ -171,7 +196,7 @@ class TileReviewApplication:
             f"{self.tile.tile_id}  |  {self.index + 1}/{len(self.manifest.tiles)}  |  "
             f"active={active} deleted={deleted}  |  source={source_label}{modified_label}"
         )
-        self.ax.text(
+        self._mode_artist = self.ax.text(
             0.01,
             0.99,
             f"Mode: {self.mode.title()}",
@@ -182,19 +207,39 @@ class TileReviewApplication:
             fontsize=11,
             bbox={"facecolor": "black", "alpha": 0.65, "edgecolor": "none"},
         )
-        self.ax.axis("off")
+        self._draw_started_at = time.perf_counter()
         self.fig.canvas.draw_idle()
+        print(
+            f"[review] overlay update scheduled in "
+            f"{time.perf_counter() - started_at:.3f}s: polygons={len(self.result.polygons)}"
+        )
+
+    def on_draw(self, _event):
+        """Report the real canvas rendering duration after a scheduled overlay update."""
+        if self._draw_started_at is None:
+            return
+        print(
+            f"[review] canvas render completed in "
+            f"{time.perf_counter() - self._draw_started_at:.3f}s"
+        )
+        self._draw_started_at = None
 
     def save_current_tile(self):
         """Save current review state and mark subsequent redraws as edited."""
+        started_at = time.perf_counter()
         path = save_review_result(self.result, self.paths.edited_results)
         self.from_edited = True
         self.modified = False
-        print(f"Saved {self.tile.tile_id}: {path}")
+        print(
+            f"[review] save completed in {time.perf_counter() - started_at:.3f}s: "
+            f"{self.tile.tile_id} -> {path}"
+        )
         return path
 
     def navigate(self, step):
         """Save and move one tile while stopping at manifest boundaries."""
+        started_at = time.perf_counter()
+        print(f"[review] navigation requested: step={step}, tile={self.tile.tile_id}")
         self.save_current_tile()
         target = self.index + step
         if target < 0 or target >= len(self.manifest.tiles):
@@ -203,6 +248,10 @@ class TileReviewApplication:
             return
         self.index = target
         self.load_current_tile()
+        print(
+            f"[review] navigation completed in {time.perf_counter() - started_at:.3f}s: "
+            f"tile={self.tile.tile_id}"
+        )
 
     def on_click(self, event):
         """Select a containing polygon or nearest boundary for a left-button click."""
@@ -228,6 +277,7 @@ class TileReviewApplication:
 
     def add_polygon_at_click(self, click_point):
         """Run mock/real Prompt inference and append one missed building."""
+        started_at = time.perf_counter()
         image_height, image_width = self.image.shape[:2]
         click = (
             min(max(int(round(click_point[0])), 0), image_width - 1),
@@ -257,6 +307,10 @@ class TileReviewApplication:
                     checkpoint_path=Path(self.args.checkpoint),
                     device=self.args.device,
                 )
+            print(
+                f"[review] prompt inference completed in "
+                f"{time.perf_counter() - started_at:.3f}s"
+            )
             if prediction is None:
                 raise ValueError("Prompt inference returned no polygon.")
             polygon = add_click_polygon(self.result, prediction, click)
