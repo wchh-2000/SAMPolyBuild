@@ -39,6 +39,23 @@ HELP_TEXT = """Tile review shortcuts:
 """
 
 
+def navigation_step_for_key(key) -> int | None:
+    """Map standard and Linux keypad key names to one tile-navigation step."""
+    normalized = str(key or "").strip().lower()
+    if normalized in ("n", "right", "6", "kp_6"):
+        return 1
+    if normalized in ("p", "left", "4", "kp_4"):
+        return -1
+    return None
+
+
+def is_auto_repeat_key_event(event) -> bool:
+    """Read Qt's native auto-repeat flag without requiring a Qt import."""
+    native_event = getattr(event, "guiEvent", None)
+    is_auto_repeat = getattr(native_event, "isAutoRepeat", None)
+    return bool(is_auto_repeat()) if callable(is_auto_repeat) else False
+
+
 def parse_args() -> argparse.Namespace:
     """Parse paths, resume position, and polygon selection distance."""
     parser = argparse.ArgumentParser(description="Review Auto polygons one tile at a time.")
@@ -118,9 +135,11 @@ class TileReviewApplication:
         self._polygon_artists = []
         self._mode_artist = None
         self._draw_started_at = None
+        self._pressed_navigation_keys = set()
         self.fig, self.ax = plt.subplots(figsize=(10, 10))
         self.fig.canvas.mpl_connect("button_press_event", self.on_click)
         self.fig.canvas.mpl_connect("key_press_event", self.on_key)
+        self.fig.canvas.mpl_connect("key_release_event", self.on_key_release)
         self.fig.canvas.mpl_connect("close_event", self.on_close)
         self.fig.canvas.mpl_connect("draw_event", self.on_draw)
         default_key_handler_id = getattr(
@@ -366,16 +385,26 @@ class TileReviewApplication:
     def on_key(self, event):
         """Dispatch documented keyboard shortcuts without invoking model operations."""
         key = (event.key or "").lower()
-        print(f"[review] key received: {key!r}")
-        if key in ("n", "right"):
-            self.navigate(1)
-        elif key in ("p", "left"):
-            self.navigate(-1)
+        navigation_step = navigation_step_for_key(key)
+        native_repeat_supported = callable(
+            getattr(getattr(event, "guiEvent", None), "isAutoRepeat", None)
+        )
+        if navigation_step is not None:
+            if is_auto_repeat_key_event(event):
+                return
+            if not native_repeat_supported and key in self._pressed_navigation_keys:
+                return
+            self._pressed_navigation_keys.add(key)
+            print(f"[review] navigation key received: {key!r}")
+            self.navigate(navigation_step)
         elif key == "d":
+            print("[review] command key received: 'd'")
             self.change_selected_status("deleted")
         elif key == "u":
+            print("[review] command key received: 'u'")
             self.change_selected_status("active")
         elif key == "a":
+            print("[review] command key received: 'a'")
             self.mode = "add"
             self.selected_polygon_id = None
             print("Add mode enabled. Left-click one missed building; Esc cancels.")
@@ -393,6 +422,11 @@ class TileReviewApplication:
             self.plt.close(self.fig)
         elif key == "h":
             print(HELP_TEXT)
+
+    def on_key_release(self, event):
+        """Release the non-Qt repeat guard for one navigation key."""
+        key = (event.key or "").lower()
+        self._pressed_navigation_keys.discard(key)
 
     def on_close(self, _event):
         """Save when the window manager closes the figure directly."""

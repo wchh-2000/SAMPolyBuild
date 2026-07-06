@@ -220,3 +220,6 @@ The viewer disables Matplotlib's default left/right view-history shortcuts so
 those keys remain dedicated to tile navigation after mouse selection or edits.
 It also locks the axes to tile pixel bounds; out-of-range polygon coordinates
 are clipped for display and do not expand the image viewport.
+Linux/remote-desktop keypad events reported as `4`, `6`, `kp_4`, or `kp_6`
+are normalized to previous/next navigation. Native Qt auto-repeat events and a
+key-release fallback prevent a held key from flooding the review event queue.
