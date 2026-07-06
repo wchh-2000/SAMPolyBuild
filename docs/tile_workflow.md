@@ -190,27 +190,7 @@ python review_tiles.py \
 
 Use `N`/Right and `P`/Left to save and navigate, click a polygon to select it,
 `D` to mark it deleted, `U` to restore it, `S` to save, `H` for help, and
-`Q`/Escape to save and quit. `--start-tile tile_0030` overrides the default
+`Q`/Escape to save and quit. Press `A` to enter Add mode and click one missed
+building; the new click polygon is written only to `edited_results`. Escape
+cancels Add mode without closing the viewer. `--start-tile tile_0030` overrides the default
 resume position, which is the first tile without an edited JSON file.
-
-## Valid-mask polygon filtering
-
-Tile-level `valid_ratio` filtering does not prevent the Auto model from
-predicting polygons over Alpha, NoData, or uniform RGB background inside a
-retained tile. Filter canonical per-tile results without changing the original
-Auto output:
-
-```bash
-python tools/filter_tile_results_by_valid_mask.py \
-  --manifest path/to/output/manifests/manifest.json \
-  --input-results path/to/output/auto_results \
-  --output-results path/to/output/auto_results_valid \
-  --min-polygon-valid-ratio 0.9 \
-  --min-polygon-valid-pixels 20 \
-  --overwrite
-```
-
-Each retained polygon receives `metadata.valid_mask_filter` audit values. A
-`filter_summary.json` records all rejected polygon ids, overlap ratios, and
-reasons. Point `review_tiles.py --auto-results` at `auto_results_valid` to
-review the filtered set. The source `auto_results` directory is never modified.

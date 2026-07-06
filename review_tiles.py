@@ -2,11 +2,18 @@
 
 import argparse
 import sys
+import time
 from pathlib import Path
 
 from utils.image_tile_reader import ImageTileReader
 from workflow.manifest import TileManifest
+from workflow.prompt_infer_adapter import (
+    make_add_bbox,
+    run_mock_prompt_inference,
+    run_prompt_inference_on_tile,
+)
 from workflow.tile_review import (
+    add_click_polygon,
     first_review_index,
     load_review_result,
     polygon_status_counts,
@@ -21,13 +28,32 @@ from workflow.tile_review import (
 HELP_TEXT = """Tile review shortcuts:
   N / Right Arrow  save and open next tile
   P / Left Arrow   save and open previous tile
+  A                enter Add mode for a missed building
   D                mark selected polygon deleted
   U                restore selected polygon to active
   S                save current tile
-  Q / Esc          save and quit
+  Esc              cancel Add mode, otherwise save and quit
+  Q                save and quit
   H                print this help
-  Left click       select polygon
+  Left click       select polygon, or add a positive point in Add mode
 """
+
+
+def navigation_step_for_key(key) -> int | None:
+    """Map standard and Linux keypad key names to one tile-navigation step."""
+    normalized = str(key or "").strip().lower()
+    if normalized in ("n", "right", "6", "kp_6"):
+        return 1
+    if normalized in ("p", "left", "4", "kp_4"):
+        return -1
+    return None
+
+
+def is_auto_repeat_key_event(event) -> bool:
+    """Read Qt's native auto-repeat flag without requiring a Qt import."""
+    native_event = getattr(event, "guiEvent", None)
+    is_auto_repeat = getattr(native_event, "isAutoRepeat", None)
+    return bool(is_auto_repeat()) if callable(is_auto_repeat) else False
 
 
 def parse_args() -> argparse.Namespace:
@@ -40,6 +66,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--selection-distance", type=float, default=10.0,
         help="Maximum pixel distance for nearest-boundary selection.",
+    )
+    parser.add_argument("--config", default=None, help="Prompt JSON config path for Add mode.")
+    parser.add_argument("--checkpoint", default=None, help="Prompt checkpoint path for Add mode.")
+    parser.add_argument("--device", default="cuda", help="Prompt device: cpu, cuda, or cuda:N.")
+    parser.add_argument(
+        "--add-bbox-size", type=int, default=256,
+        help="Centered bbox side length used for an Add-mode click.",
+    )
+    parser.add_argument(
+        "--mock-prompt", action="store_true",
+        help="Generate a deterministic rectangle without loading a model.",
     )
     return parser.parse_args()
 
@@ -77,6 +114,8 @@ class TileReviewApplication:
         """Initialize session state and connect existing Matplotlib event hooks."""
         if args.selection_distance < 0:
             raise ValueError("--selection-distance must be non-negative.")
+        if args.add_bbox_size <= 0:
+            raise ValueError("--add-bbox-size must be positive.")
         self.args = args
         self.manifest_path = manifest_path
         self.manifest = manifest
@@ -89,11 +128,26 @@ class TileReviewApplication:
         self.result = None
         self.from_edited = False
         self.selected_polygon_id = None
+        self.mode = "select"
+        self.modified = False
         self._closing = False
+        self._image_artist = None
+        self._polygon_artists = []
+        self._mode_artist = None
+        self._draw_started_at = None
+        self._pressed_navigation_keys = set()
         self.fig, self.ax = plt.subplots(figsize=(10, 10))
         self.fig.canvas.mpl_connect("button_press_event", self.on_click)
         self.fig.canvas.mpl_connect("key_press_event", self.on_key)
+        self.fig.canvas.mpl_connect("key_release_event", self.on_key_release)
         self.fig.canvas.mpl_connect("close_event", self.on_close)
+        self.fig.canvas.mpl_connect("draw_event", self.on_draw)
+        default_key_handler_id = getattr(
+            self.fig.canvas.manager, "key_press_handler_id", None
+        )
+        if default_key_handler_id is not None:
+            self.fig.canvas.mpl_disconnect(default_key_handler_id)
+            print("[review] Matplotlib default key handler disabled.")
         try:
             self.fig.canvas.manager.set_window_title("SAMPoly Tile Review")
         except AttributeError:
@@ -107,55 +161,133 @@ class TileReviewApplication:
 
     def load_current_tile(self):
         """Load current image and edited/auto/empty result, then redraw the overlay."""
+        started_at = time.perf_counter()
         self.result, self.from_edited = load_review_result(
             self.tile,
             self.paths.auto_results,
             self.paths.edited_results,
         )
         image_path = resolve_tile_image(self.paths.workspace, self.tile.image_path)
+        self.image_path = image_path
         with ImageTileReader(image_path, bands=(1, 2, 3)) as reader:
             image = reader.read_tile(0, 0, reader.width, reader.height)
         self.image = display_image(image, self.np)
         self.selected_polygon_id = None
-        self.draw_overlay()
+        self.mode = "select"
+        self.modified = False
+        self.draw_overlay(reset_image=True)
+        print(
+            f"[review] tile load completed in {time.perf_counter() - started_at:.3f}s: "
+            f"{self.tile.tile_id}"
+        )
 
-    def draw_overlay(self):
-        """Draw image, active/deleted polygons, selection highlight, and status title."""
-        self.ax.clear()
-        self.ax.imshow(self.image)
+    def draw_overlay(self, reset_image=False):
+        """Update polygon artists while retaining the current tile image when possible."""
+        started_at = time.perf_counter()
+        if reset_image or self._image_artist is None:
+            self.ax.clear()
+            self._image_artist = self.ax.imshow(self.image)
+            image_height, image_width = self.image.shape[:2]
+            self.ax.set_autoscale_on(False)
+            self.ax.set_xlim(-0.5, image_width - 0.5)
+            self.ax.set_ylim(image_height - 0.5, -0.5)
+            self._polygon_artists = []
+            self._mode_artist = None
+            self.ax.axis("off")
+        else:
+            for artist in self._polygon_artists:
+                artist.remove()
+            self._polygon_artists = []
+            if self._mode_artist is not None:
+                self._mode_artist.remove()
+                self._mode_artist = None
+
         for polygon in self.result.polygons:
             points = self.np.asarray(polygon.points_tile, dtype=float)
             selected = polygon.id == self.selected_polygon_id
             if selected:
                 color, linewidth, linestyle = "yellow", 3.0, "-"
             elif polygon.status == "deleted":
-                color, linewidth, linestyle = "gray", 1.2, "--"
+                color, linewidth, linestyle = "red", 1.2, "-"
             elif polygon.status == "hidden":
                 color, linewidth, linestyle = "dimgray", 1.0, ":"
             else:
                 color, linewidth, linestyle = "lime", 1.5, "-"
-            self.ax.plot(
+            artists = self.ax.plot(
                 points[:, 0], points[:, 1],
-                color=color, linewidth=linewidth, linestyle=linestyle,
+                color=color, linewidth=linewidth, linestyle=linestyle, clip_on=True,
             )
+            self._polygon_artists.extend(artists)
         active, deleted = polygon_status_counts(self.result)
         source_label = "edited_results" if self.from_edited else "auto/empty"
+        modified_label = "  |  modified" if self.modified else ""
         self.ax.set_title(
             f"{self.tile.tile_id}  |  {self.index + 1}/{len(self.manifest.tiles)}  |  "
-            f"active={active} deleted={deleted}  |  source={source_label}"
+            f"active={active} deleted={deleted}  |  source={source_label}{modified_label}"
         )
-        self.ax.axis("off")
+        self._mode_artist = self.ax.text(
+            0.01,
+            0.99,
+            f"Mode: {self.mode.title()}",
+            transform=self.ax.transAxes,
+            ha="left",
+            va="top",
+            color="white",
+            fontsize=11,
+            bbox={"facecolor": "black", "alpha": 0.65, "edgecolor": "none"},
+        )
+        self._draw_started_at = time.perf_counter()
         self.fig.canvas.draw_idle()
+        print(
+            f"[review] overlay update scheduled in "
+            f"{time.perf_counter() - started_at:.3f}s: polygons={len(self.result.polygons)}"
+        )
+
+    def on_draw(self, _event):
+        """Report the real canvas rendering duration after a scheduled overlay update."""
+        if self._draw_started_at is None:
+            self.restore_canvas_focus()
+            return
+        print(
+            f"[review] canvas render completed in "
+            f"{time.perf_counter() - self._draw_started_at:.3f}s"
+        )
+        self._draw_started_at = None
+        self.restore_canvas_focus()
+
+    def restore_canvas_focus(self):
+        """Return keyboard focus to common Matplotlib GUI canvas backends."""
+        canvas = self.fig.canvas
+        set_focus = getattr(canvas, "setFocus", None)
+        if callable(set_focus):
+            set_focus()
+            return
+        grab_focus = getattr(canvas, "grab_focus", None)
+        if callable(grab_focus):
+            grab_focus()
+            return
+        get_tk_widget = getattr(canvas, "get_tk_widget", None)
+        if callable(get_tk_widget):
+            focus_set = getattr(get_tk_widget(), "focus_set", None)
+            if callable(focus_set):
+                focus_set()
 
     def save_current_tile(self):
         """Save current review state and mark subsequent redraws as edited."""
+        started_at = time.perf_counter()
         path = save_review_result(self.result, self.paths.edited_results)
         self.from_edited = True
-        print(f"Saved {self.tile.tile_id}: {path}")
+        self.modified = False
+        print(
+            f"[review] save completed in {time.perf_counter() - started_at:.3f}s: "
+            f"{self.tile.tile_id} -> {path}"
+        )
         return path
 
     def navigate(self, step):
         """Save and move one tile while stopping at manifest boundaries."""
+        started_at = time.perf_counter()
+        print(f"[review] navigation requested: step={step}, tile={self.tile.tile_id}")
         self.save_current_tile()
         target = self.index + step
         if target < 0 or target >= len(self.manifest.tiles):
@@ -164,10 +296,17 @@ class TileReviewApplication:
             return
         self.index = target
         self.load_current_tile()
+        print(
+            f"[review] navigation completed in {time.perf_counter() - started_at:.3f}s: "
+            f"tile={self.tile.tile_id}"
+        )
 
     def on_click(self, event):
         """Select a containing polygon or nearest boundary for a left-button click."""
         if event.inaxes != self.ax or event.button != 1 or event.xdata is None or event.ydata is None:
+            return
+        if self.mode == "add":
+            self.add_polygon_at_click((float(event.xdata), float(event.ydata)))
             return
         polygon = select_polygon_at_point(
             self.result,
@@ -184,28 +323,98 @@ class TileReviewApplication:
             )
         self.draw_overlay()
 
+    def add_polygon_at_click(self, click_point):
+        """Run mock/real Prompt inference and append one missed building."""
+        started_at = time.perf_counter()
+        image_height, image_width = self.image.shape[:2]
+        click = (
+            min(max(int(round(click_point[0])), 0), image_width - 1),
+            min(max(int(round(click_point[1])), 0), image_height - 1),
+        )
+        try:
+            bbox = make_add_bbox(
+                click,
+                image_width,
+                image_height,
+                self.args.add_bbox_size,
+            )
+            if self.args.mock_prompt:
+                prediction = run_mock_prompt_inference([click], [], bbox)
+            else:
+                if not self.args.config or not self.args.checkpoint:
+                    print(
+                        "Add mode requires --config and --checkpoint, or use --mock-prompt."
+                    )
+                    return
+                prediction = run_prompt_inference_on_tile(
+                    image_path=self.image_path,
+                    positive_points=[click],
+                    negative_points=[],
+                    bbox=bbox,
+                    config_path=Path(self.args.config),
+                    checkpoint_path=Path(self.args.checkpoint),
+                    device=self.args.device,
+                )
+            print(
+                f"[review] prompt inference completed in "
+                f"{time.perf_counter() - started_at:.3f}s"
+            )
+            if prediction is None:
+                raise ValueError("Prompt inference returned no polygon.")
+            polygon = add_click_polygon(self.result, prediction, click)
+        except Exception as exc:
+            print(f"Add polygon failed: {type(exc).__name__}: {exc}")
+            return
+
+        self.selected_polygon_id = polygon.id
+        self.modified = True
+        self.mode = "select"
+        print(f"Added polygon from click: id={polygon.id}, score={polygon.score}")
+        self.draw_overlay()
+
     def change_selected_status(self, status):
         """Apply a soft-delete or restore operation to the current selection."""
         if self.selected_polygon_id is None:
             print("No polygon is selected.")
             return
         polygon = set_polygon_status(self.result, self.selected_polygon_id, status)
+        self.modified = True
         print(f"Polygon {polygon.id} status changed to {polygon.status}.")
         self.draw_overlay()
 
     def on_key(self, event):
         """Dispatch documented keyboard shortcuts without invoking model operations."""
         key = (event.key or "").lower()
-        if key in ("n", "right"):
-            self.navigate(1)
-        elif key in ("p", "left"):
-            self.navigate(-1)
+        navigation_step = navigation_step_for_key(key)
+        native_repeat_supported = callable(
+            getattr(getattr(event, "guiEvent", None), "isAutoRepeat", None)
+        )
+        if navigation_step is not None:
+            if is_auto_repeat_key_event(event):
+                return
+            if not native_repeat_supported and key in self._pressed_navigation_keys:
+                return
+            self._pressed_navigation_keys.add(key)
+            print(f"[review] navigation key received: {key!r}")
+            self.navigate(navigation_step)
         elif key == "d":
+            print("[review] command key received: 'd'")
             self.change_selected_status("deleted")
         elif key == "u":
+            print("[review] command key received: 'u'")
             self.change_selected_status("active")
+        elif key == "a":
+            print("[review] command key received: 'a'")
+            self.mode = "add"
+            self.selected_polygon_id = None
+            print("Add mode enabled. Left-click one missed building; Esc cancels.")
+            self.draw_overlay()
         elif key == "s":
             self.save_current_tile()
+            self.draw_overlay()
+        elif key == "escape" and self.mode == "add":
+            self.mode = "select"
+            print("Add mode cancelled.")
             self.draw_overlay()
         elif key in ("q", "escape"):
             self.save_current_tile()
@@ -213,6 +422,11 @@ class TileReviewApplication:
             self.plt.close(self.fig)
         elif key == "h":
             print(HELP_TEXT)
+
+    def on_key_release(self, event):
+        """Release the non-Qt repeat guard for one navigation key."""
+        key = (event.key or "").lower()
+        self._pressed_navigation_keys.discard(key)
 
     def on_close(self, _event):
         """Save when the window manager closes the figure directly."""
