@@ -123,6 +123,12 @@ class TileReviewApplication:
         self.fig.canvas.mpl_connect("key_press_event", self.on_key)
         self.fig.canvas.mpl_connect("close_event", self.on_close)
         self.fig.canvas.mpl_connect("draw_event", self.on_draw)
+        default_key_handler_id = getattr(
+            self.fig.canvas.manager, "key_press_handler_id", None
+        )
+        if default_key_handler_id is not None:
+            self.fig.canvas.mpl_disconnect(default_key_handler_id)
+            print("[review] Matplotlib default key handler disabled.")
         try:
             self.fig.canvas.manager.set_window_title("SAMPoly Tile Review")
         except AttributeError:
@@ -162,6 +168,10 @@ class TileReviewApplication:
         if reset_image or self._image_artist is None:
             self.ax.clear()
             self._image_artist = self.ax.imshow(self.image)
+            image_height, image_width = self.image.shape[:2]
+            self.ax.set_autoscale_on(False)
+            self.ax.set_xlim(-0.5, image_width - 0.5)
+            self.ax.set_ylim(image_height - 0.5, -0.5)
             self._polygon_artists = []
             self._mode_artist = None
             self.ax.axis("off")
@@ -186,7 +196,7 @@ class TileReviewApplication:
                 color, linewidth, linestyle = "lime", 1.5, "-"
             artists = self.ax.plot(
                 points[:, 0], points[:, 1],
-                color=color, linewidth=linewidth, linestyle=linestyle,
+                color=color, linewidth=linewidth, linestyle=linestyle, clip_on=True,
             )
             self._polygon_artists.extend(artists)
         active, deleted = polygon_status_counts(self.result)
@@ -217,12 +227,31 @@ class TileReviewApplication:
     def on_draw(self, _event):
         """Report the real canvas rendering duration after a scheduled overlay update."""
         if self._draw_started_at is None:
+            self.restore_canvas_focus()
             return
         print(
             f"[review] canvas render completed in "
             f"{time.perf_counter() - self._draw_started_at:.3f}s"
         )
         self._draw_started_at = None
+        self.restore_canvas_focus()
+
+    def restore_canvas_focus(self):
+        """Return keyboard focus to common Matplotlib GUI canvas backends."""
+        canvas = self.fig.canvas
+        set_focus = getattr(canvas, "setFocus", None)
+        if callable(set_focus):
+            set_focus()
+            return
+        grab_focus = getattr(canvas, "grab_focus", None)
+        if callable(grab_focus):
+            grab_focus()
+            return
+        get_tk_widget = getattr(canvas, "get_tk_widget", None)
+        if callable(get_tk_widget):
+            focus_set = getattr(get_tk_widget(), "focus_set", None)
+            if callable(focus_set):
+                focus_set()
 
     def save_current_tile(self):
         """Save current review state and mark subsequent redraws as edited."""
@@ -337,6 +366,7 @@ class TileReviewApplication:
     def on_key(self, event):
         """Dispatch documented keyboard shortcuts without invoking model operations."""
         key = (event.key or "").lower()
+        print(f"[review] key received: {key!r}")
         if key in ("n", "right"):
             self.navigate(1)
         elif key in ("p", "left"):

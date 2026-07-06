@@ -216,3 +216,7 @@ and Add-mode overlays change. Deleted polygons use a red solid outline to avoid
 expensive dashed-path rendering on detailed polygons. Runtime messages prefixed
 with `[review]` report Prompt inference, JSON save, tile load, navigation, and
 actual canvas-render durations for diagnosing slow Linux GUI sessions.
+The viewer disables Matplotlib's default left/right view-history shortcuts so
+those keys remain dedicated to tile navigation after mouse selection or edits.
+It also locks the axes to tile pixel bounds; out-of-range polygon coordinates
+are clipped for display and do not expand the image viewport.
