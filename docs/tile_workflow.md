@@ -190,5 +190,36 @@ python review_tiles.py \
 
 Use `N`/Right and `P`/Left to save and navigate, click a polygon to select it,
 `D` to mark it deleted, `U` to restore it, `S` to save, `H` for help, and
-`Q`/Escape to save and quit. `--start-tile tile_0030` overrides the default
+`Q`/Escape to save and quit. Press `A` to enter Add mode and click one missed
+building; the new click polygon is written only to `edited_results`. Escape
+cancels Add mode without closing the viewer. `--start-tile tile_0030` overrides the default
 resume position, which is the first tile without an edited JSON file.
+
+Use the deterministic mock adapter to verify the Add workflow without model
+dependencies:
+
+```bash
+python review_tiles.py \
+  --manifest path/to/output/manifests/manifest.json \
+  --auto-results path/to/output/auto_results \
+  --edited-results path/to/output/edited_results \
+  --mock-prompt \
+  --add-bbox-size 256
+```
+
+For real Prompt inference, replace `--mock-prompt` with `--config`,
+`--checkpoint`, and optionally `--device cuda:0`. The predictor is initialized
+on the first Add click and reused for later clicks.
+
+The viewer retains the current image artist while selection, deletion, restore,
+and Add-mode overlays change. Deleted polygons use a red solid outline to avoid
+expensive dashed-path rendering on detailed polygons. Runtime messages prefixed
+with `[review]` report Prompt inference, JSON save, tile load, navigation, and
+actual canvas-render durations for diagnosing slow Linux GUI sessions.
+The viewer disables Matplotlib's default left/right view-history shortcuts so
+those keys remain dedicated to tile navigation after mouse selection or edits.
+It also locks the axes to tile pixel bounds; out-of-range polygon coordinates
+are clipped for display and do not expand the image viewport.
+Linux/remote-desktop keypad events reported as `4`, `6`, `kp_4`, or `kp_6`
+are normalized to previous/next navigation. Native Qt auto-repeat events and a
+key-release fallback prevent a held key from flooding the review event queue.
