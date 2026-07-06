@@ -1,10 +1,16 @@
 """Model-free tests for filtering Auto polygons against tile valid pixels."""
 
+import tempfile
 import unittest
+from pathlib import Path
 
 import numpy as np
 
-from tools.filter_tile_results_by_valid_mask import filter_result, polygon_validity
+from tools.filter_tile_results_by_valid_mask import (
+    filter_result,
+    polygon_validity,
+    resolve_manifest_tile_path,
+)
 from workflow.tile_manager import PolygonRecord, TileResult
 
 
@@ -36,6 +42,25 @@ class ValidMaskPolygonFilterTest(unittest.TestCase):
         self.assertEqual(validity["polygon_pixels"], 100)
         self.assertEqual(validity["valid_pixels"], 50)
         self.assertEqual(validity["valid_ratio"], 0.5)
+
+    def test_manifest_tile_path_resolution_is_local_and_traversal_safe(self):
+        """The CLI must resolve canonical tile paths without importing another CLI."""
+        with tempfile.TemporaryDirectory() as directory:
+            workspace = Path(directory) / "output"
+            manifest_path = workspace / "manifests" / "manifest.json"
+            tile_path = workspace / "tiles" / "tile_0001.tif"
+            manifest_path.parent.mkdir(parents=True)
+            tile_path.parent.mkdir()
+            manifest_path.touch()
+            tile_path.touch()
+            self.assertEqual(
+                resolve_manifest_tile_path(
+                    manifest_path, Path("tiles") / "tile_0001.tif"
+                ),
+                tile_path.resolve(),
+            )
+            with self.assertRaises(ValueError):
+                resolve_manifest_tile_path(manifest_path, Path("..") / "outside.tif")
 
     def test_low_valid_overlap_is_rejected_without_mutating_input(self):
         result = self._result()

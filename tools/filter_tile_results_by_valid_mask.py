@@ -8,10 +8,10 @@ from pathlib import Path
 import numpy as np
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
+if str(ROOT_DIR) in sys.path:
+    sys.path.remove(str(ROOT_DIR))
+sys.path.insert(0, str(ROOT_DIR))
 
-from infer_tiles_auto import resolve_tile_path
 from utils.image_tile_reader import ImageTileReader
 from workflow.manifest import TileManifest, write_json
 from workflow.tile_manager import TileResult
@@ -28,6 +28,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-polygon-valid-pixels", type=int, default=20)
     parser.add_argument("--overwrite", action="store_true")
     return parser.parse_args()
+
+
+def resolve_manifest_tile_path(manifest_path: Path, image_path: Path) -> Path:
+    """Resolve a manifest-relative tile path without importing a same-named CLI module."""
+    manifest_path = Path(manifest_path).expanduser().resolve()
+    relative_path = Path(image_path)
+    if relative_path.is_absolute():
+        raise ValueError(f"Manifest image_path must be relative: {relative_path}")
+    workspace = manifest_path.parent.parent \
+        if manifest_path.parent.name == "manifests" else manifest_path.parent
+    workspace = workspace.resolve()
+    resolved = (workspace / relative_path).resolve()
+    try:
+        resolved.relative_to(workspace)
+    except ValueError as exc:
+        raise ValueError(f"Manifest image_path escapes its workspace: {relative_path}") from exc
+    if not resolved.is_file():
+        raise FileNotFoundError(f"Tile image not found: {resolved}")
+    return resolved
 
 
 def rasterize_polygon(points, width: int, height: int) -> np.ndarray:
@@ -148,7 +167,7 @@ def run(args: argparse.Namespace) -> dict:
         result = TileResult.load(input_path)
         if result.tile_id != tile.tile_id:
             raise ValueError(f"Result tile_id mismatch: {result.tile_id} != {tile.tile_id}")
-        tile_path = resolve_tile_path(manifest_path, tile.image_path)
+        tile_path = resolve_manifest_tile_path(manifest_path, tile.image_path)
         with ImageTileReader(tile_path, bands=(1, 2, 3)) as reader:
             _, valid_mask = reader.read_tile_with_valid_mask(
                 0, 0, reader.width, reader.height
