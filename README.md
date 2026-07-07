@@ -257,7 +257,6 @@ python tools/test_prompt_inference_service.py \
   --click_y 400 \
   --bbox_mode fixed \
   --gpu 0
-
 python tools/test_prompt_inference_service.py \
   --imgpth path/to/test.png \
   --checkpoint path/to/prompt_interactive.pth \
@@ -271,6 +270,47 @@ python tools/test_prompt_inference_service.py \
 ```
 
 The initial service is stateless: each `infer()` call reloads the image and recomputes its embedding. It serializes access to the predictor because the predictor stores mutable image features. Session and embedding reuse are intentionally deferred to a later stage.
+
+### Tile review refine session
+
+`review_tiles.py` now supports an in-memory Refine session on top of the
+existing tile review workflow. This stage does not change Auto inference,
+manifest generation, or the Prompt model itself. It only wraps repeated Prompt
+clicks in a session so previews stay in memory until you accept them.
+
+Start the reviewer:
+
+```shell
+python review_tiles.py \
+  --manifest path/to/output/manifests/manifest.json \
+  --auto-results path/to/output/auto_results \
+  --edited-results path/to/output/edited_results \
+  --config configs/prompt_instance_spacenet.json \
+  --checkpoint prompt_interactive.pth \
+  --device cuda:0
+```
+
+Model-free smoke test:
+
+```shell
+python review_tiles.py \
+  --manifest path/to/output/manifests/manifest.json \
+  --auto-results path/to/output/auto_results \
+  --edited-results path/to/output/edited_results \
+  --mock-prompt
+```
+
+Review controls:
+
+- `R`: start Refine mode for the selected polygon
+- `Left click`: append one positive point and refresh the preview polygon
+- `Enter`: accept the current preview and save it to `edited_results`
+- `Esc`: cancel the running Refine session
+- `A`: keep using the existing Add mode
+
+The Refine session reuses the loaded tile image and caches the active crop
+embedding through `PromptSessionCache`, so repeated Prompt updates do not need
+to rebuild model state from scratch during one session.
 
 ## Dataset Preparation
 ### SpaceNet Vegas Dataset
