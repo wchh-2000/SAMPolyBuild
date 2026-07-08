@@ -6,6 +6,7 @@ import time
 from pathlib import Path
 
 from utils.image_tile_reader import ImageTileReader
+from workflow.auto_bbox_provider import select_bbox_for_click
 from workflow.manifest import TileManifest
 from workflow.prompt_infer_adapter import (
     PromptSessionCache,
@@ -13,12 +14,14 @@ from workflow.prompt_infer_adapter import (
     run_mock_prompt_inference,
     run_prompt_inference_on_tile,
 )
+from workflow.prompt_review_session import PromptReviewSession
 from workflow.refine_session import RefineSession
 from workflow.tile_review import (
     add_click_polygon,
     first_review_index,
+    load_auto_result,
     load_review_result,
-    polygon_status_counts,
+    next_source_polygon_id,
     resolve_review_paths,
     resolve_tile_image,
     save_review_result,
@@ -30,16 +33,18 @@ from workflow.tile_review import (
 HELP_TEXT = """Tile review shortcuts:
   N / Right Arrow  save and open next tile
   P / Left Arrow   save and open previous tile
+  Left click       in Prompt mode: start a building or add a positive point
+  Right click      in Prompt mode: add a negative point to the running building
+  Enter            accept the running Prompt/Refine session
+  C / Esc          cancel the running Prompt session
   A                enter Add mode for a missed building
   R                refine the selected polygon
-  Enter            accept the running Refine session
   D                mark selected polygon deleted
   U                restore selected polygon to active
   S                save current tile
-  Esc              cancel Add/Refine mode, otherwise save and quit
+  Esc              cancel Add/Prompt/Refine mode, otherwise save and quit
   Q                save and quit
   H                print this help
-  Left click       select polygon, or add a positive point in Add/Refine mode
 """
 
 
@@ -74,6 +79,39 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", default=None, help="Prompt JSON config path for Add mode.")
     parser.add_argument("--checkpoint", default=None, help="Prompt checkpoint path for Add mode.")
     parser.add_argument("--device", default="cuda", help="Prompt device: cpu, cuda, or cuda:N.")
+    parser.add_argument(
+        "--default-mode",
+        choices=("prompt", "select"),
+        default="prompt",
+        help="Prompt-first mode or the legacy select-first mode.",
+    )
+    parser.add_argument(
+        "--bbox-provider",
+        choices=("auto", "fixed", "auto_or_fixed"),
+        default="auto_or_fixed",
+        help="How Prompt-first mode selects the starting bbox for one building.",
+    )
+    parser.add_argument(
+        "--bbox-nearest-threshold", type=float, default=80.0,
+        help="Maximum pixel distance for auto-nearest bbox fallback.",
+    )
+    parser.add_argument(
+        "--prompt-source-name", default="prompt",
+        help="Source field used when Prompt-first mode saves a confirmed polygon.",
+    )
+    parser.add_argument(
+        "--show-auto",
+        dest="show_auto",
+        action="store_true",
+        help="Draw Auto polygons for debugging instead of hiding them.",
+    )
+    parser.add_argument(
+        "--hide-auto",
+        dest="show_auto",
+        action="store_false",
+        help="Hide Auto polygons while still using them as Prompt bbox candidates.",
+    )
+    parser.set_defaults(show_auto=False)
     parser.add_argument(
         "--add-bbox-size", type=int, default=256,
         help="Centered bbox side length used for an Add-mode click.",
@@ -118,8 +156,12 @@ class TileReviewApplication:
         """Initialize session state and connect existing Matplotlib event hooks."""
         if args.selection_distance < 0:
             raise ValueError("--selection-distance must be non-negative.")
+        if args.bbox_nearest_threshold < 0:
+            raise ValueError("--bbox-nearest-threshold must be non-negative.")
         if args.add_bbox_size <= 0:
             raise ValueError("--add-bbox-size must be positive.")
+        if not str(args.prompt_source_name).strip():
+            raise ValueError("--prompt-source-name must not be empty.")
         self.args = args
         self.manifest_path = manifest_path
         self.manifest = manifest
@@ -130,9 +172,11 @@ class TileReviewApplication:
             manifest.tiles, paths.edited_results, args.start_tile
         )
         self.result = None
+        self.auto_result = None
         self.from_edited = False
         self.selected_polygon_id = None
-        self.mode = "select"
+        self.mode = self.args.default_mode
+        self.prompt_review_session = None
         self.refine_session = None
         self.prompt_session_cache = None
         self.modified = False
@@ -168,18 +212,25 @@ class TileReviewApplication:
     def load_current_tile(self):
         """Load current image and edited/auto/empty result, then redraw the overlay."""
         started_at = time.perf_counter()
+        self.auto_result = load_auto_result(self.tile, self.paths.auto_results)
         self.result, self.from_edited = load_review_result(
             self.tile,
             self.paths.auto_results,
             self.paths.edited_results,
         )
+        if self.args.default_mode == "prompt":
+            self.result.polygons = [
+                polygon for polygon in self.result.polygons
+                if polygon.source != "auto"
+            ]
         image_path = resolve_tile_image(self.paths.workspace, self.tile.image_path)
         self.image_path = image_path
         with ImageTileReader(image_path, bands=(1, 2, 3)) as reader:
             image = reader.read_tile(0, 0, reader.width, reader.height)
         self.image = display_image(image, self.np)
         self.selected_polygon_id = None
-        self.mode = "select"
+        self.mode = self.args.default_mode
+        self.prompt_review_session = None
         self.refine_session = None
         self.prompt_session_cache = None
         self.modified = False
@@ -210,12 +261,23 @@ class TileReviewApplication:
                 self._mode_artist.remove()
                 self._mode_artist = None
 
+        visible_polygons = []
+        if self.args.show_auto and self.args.default_mode == "prompt":
+            for polygon in self.auto_result.polygons:
+                points = self.np.asarray(polygon.points_tile, dtype=float)
+                self._polygon_artists.extend(
+                    self.ax.plot(
+                        points[:, 0], points[:, 1],
+                        color="royalblue", linewidth=1.0, linestyle="--", alpha=0.7, clip_on=True,
+                    )
+                )
         for polygon in self.result.polygons:
             display_polygon = (
                 self.refine_session.current_polygon
                 if self.refine_session is not None and polygon.id == self.refine_session.polygon_id
                 else polygon
             )
+            visible_polygons.append(polygon)
             points = self.np.asarray(display_polygon.points_tile, dtype=float)
             selected = polygon.id == self.selected_polygon_id
             if selected:
@@ -231,23 +293,74 @@ class TileReviewApplication:
                 color=color, linewidth=linewidth, linestyle=linestyle, clip_on=True,
             )
             self._polygon_artists.extend(artists)
+        if self.prompt_review_session is not None and self.prompt_review_session.current_polygon is not None:
+            preview = self.np.asarray(
+                self.prompt_review_session.current_polygon.points_tile,
+                dtype=float,
+            )
+            self._polygon_artists.extend(
+                self.ax.plot(
+                    preview[:, 0], preview[:, 1],
+                    color="cyan", linewidth=2.5, linestyle="-", clip_on=True,
+                )
+            )
+        if self.prompt_review_session is not None and self.prompt_review_session.positive_points:
+            clicks = self.np.asarray(self.prompt_review_session.positive_points, dtype=float)
+            self._polygon_artists.append(self.ax.scatter(
+                clicks[:, 0], clicks[:, 1], marker="+", s=90,
+                linewidths=2.0, color="cyan", clip_on=True,
+            ))
+        if self.prompt_review_session is not None and self.prompt_review_session.negative_points:
+            clicks = self.np.asarray(self.prompt_review_session.negative_points, dtype=float)
+            self._polygon_artists.append(self.ax.scatter(
+                clicks[:, 0], clicks[:, 1], marker="x", s=85,
+                linewidths=2.0, color="red", clip_on=True,
+            ))
         if self.refine_session is not None and self.refine_session.positive_points:
             clicks = self.np.asarray(self.refine_session.positive_points, dtype=float)
             self._polygon_artists.append(self.ax.scatter(
                 clicks[:, 0], clicks[:, 1], marker="+", s=90,
                 linewidths=2.0, color="cyan", clip_on=True,
             ))
-        active, deleted = polygon_status_counts(self.result)
+        active = sum(
+            polygon.status == "active" for polygon in visible_polygons
+        )
+        deleted = sum(
+            polygon.status == "deleted" for polygon in visible_polygons
+        )
         source_label = "edited_results" if self.from_edited else "auto/empty"
         modified_label = "  |  modified" if self.modified else ""
         self.ax.set_title(
             f"{self.tile.tile_id}  |  {self.index + 1}/{len(self.manifest.tiles)}  |  "
             f"active={active} deleted={deleted}  |  source={source_label}{modified_label}"
         )
+        prompt_session_state = (
+            self.prompt_review_session.state.value
+            if self.prompt_review_session is not None else "idle"
+        )
+        prompt_bbox_source = (
+            self.prompt_review_session.bbox_source
+            if self.prompt_review_session is not None else "-"
+        )
+        prompt_positive_count = (
+            len(self.prompt_review_session.positive_points)
+            if self.prompt_review_session is not None else 0
+        )
+        prompt_negative_count = (
+            len(self.prompt_review_session.negative_points)
+            if self.prompt_review_session is not None else 0
+        )
         self._mode_artist = self.ax.text(
             0.01,
             0.99,
-            f"Mode: {self.mode.title()}",
+            "\n".join(
+                [
+                    f"Mode: {self.mode.title()}",
+                    f"Session: {prompt_session_state}",
+                    f"BBox: {prompt_bbox_source}",
+                    f"Points: +{prompt_positive_count} / -{prompt_negative_count}",
+                ]
+            ),
             transform=self.ax.transAxes,
             ha="left",
             va="top",
@@ -305,6 +418,9 @@ class TileReviewApplication:
 
     def navigate(self, step):
         """Save and move one tile while stopping at manifest boundaries."""
+        if self.prompt_review_session is not None:
+            print("Accept with Enter or cancel with Esc/C before changing tiles.")
+            return
         if self.refine_session is not None:
             print("Accept with Enter or cancel with Esc before changing tiles.")
             return
@@ -325,17 +441,29 @@ class TileReviewApplication:
 
     def on_click(self, event):
         """Select a containing polygon or nearest boundary for a left-button click."""
-        if event.inaxes != self.ax or event.button != 1 or event.xdata is None or event.ydata is None:
+        if event.inaxes != self.ax or event.xdata is None or event.ydata is None:
+            return
+        if event.button not in (1, 3):
+            return
+        click = (float(event.xdata), float(event.ydata))
+        if self.mode == "prompt":
+            if self.prompt_review_session is None:
+                if event.button == 1:
+                    self.start_prompt_review(click)
+                return
+            self.update_prompt_review(click, is_positive=(event.button == 1))
+            return
+        if event.button != 1:
             return
         if self.mode == "add":
-            self.add_polygon_at_click((float(event.xdata), float(event.ydata)))
+            self.add_polygon_at_click(click)
             return
         if self.mode == "refine":
-            self.refine_polygon_at_click((float(event.xdata), float(event.ydata)))
+            self.refine_polygon_at_click(click)
             return
         polygon = select_polygon_at_point(
             self.result,
-            (float(event.xdata), float(event.ydata)),
+            click,
             max_distance=self.args.selection_distance,
         )
         self.selected_polygon_id = polygon.id if polygon else None
@@ -357,6 +485,147 @@ class TileReviewApplication:
              if polygon.id == self.selected_polygon_id),
             None,
         )
+
+    def start_prompt_review(self, click_point):
+        """Start one Prompt-first building session from a tile click."""
+        image_height, image_width = self.image.shape[:2]
+        click = (
+            min(max(int(round(click_point[0])), 0), image_width - 1),
+            min(max(int(round(click_point[1])), 0), image_height - 1),
+        )
+        bbox_info = None
+        if self.args.bbox_provider in ("auto", "auto_or_fixed"):
+            bbox_info = select_bbox_for_click(
+                polygons=self.auto_result.polygons,
+                click=click,
+                nearest_threshold=self.args.bbox_nearest_threshold,
+                tile_width=image_width,
+                tile_height=image_height,
+            )
+        if self.args.bbox_provider == "fixed":
+            bbox = make_add_bbox(click, image_width, image_height, self.args.add_bbox_size)
+            bbox_source = "fixed_fallback"
+            selected_auto_polygon_id = None
+            selected_auto_score = None
+            selected_auto_distance = None
+        elif bbox_info is not None:
+            bbox = bbox_info["bbox"]
+            bbox_source = bbox_info["source"]
+            selected_auto_polygon_id = bbox_info["polygon_id"]
+            selected_auto_score = bbox_info["score"]
+            selected_auto_distance = bbox_info["distance"]
+        elif self.args.bbox_provider == "auto":
+            print("Prompt-first mode could not find a usable Auto bbox for this click.")
+            return
+        else:
+            bbox = make_add_bbox(click, image_width, image_height, self.args.add_bbox_size)
+            bbox_source = "fixed_fallback"
+            selected_auto_polygon_id = None
+            selected_auto_score = None
+            selected_auto_distance = None
+
+        self.prompt_review_session = PromptReviewSession.start(
+            tile_id=self.tile.tile_id,
+            bbox=bbox,
+            bbox_source=bbox_source,
+            selected_auto_polygon_id=selected_auto_polygon_id,
+            selected_auto_score=selected_auto_score,
+            selected_auto_distance=selected_auto_distance,
+        )
+        self.prompt_session_cache = PromptSessionCache()
+        self.mode = "prompt"
+        print(
+            f"Prompt session started: bbox_source={bbox_source}, "
+            f"auto_polygon={selected_auto_polygon_id}"
+        )
+        self.update_prompt_review(click, is_positive=True)
+
+    def update_prompt_review(self, click_point, is_positive):
+        """Add one positive or negative Prompt point and refresh the preview."""
+        if self.prompt_review_session is None:
+            raise RuntimeError("Prompt mode has no active session.")
+        image_height, image_width = self.image.shape[:2]
+        click = (
+            min(max(int(round(click_point[0])), 0), image_width - 1),
+            min(max(int(round(click_point[1])), 0), image_height - 1),
+        )
+        bbox = self.prompt_review_session.bbox
+
+        def prompt_callback(positive_points, negative_points):
+            if self.args.mock_prompt:
+                return run_mock_prompt_inference(positive_points, negative_points, bbox)
+            return run_prompt_inference_on_tile(
+                image_path=self.image_path,
+                positive_points=positive_points,
+                negative_points=negative_points,
+                bbox=bbox,
+                config_path=Path(self.args.config),
+                checkpoint_path=Path(self.args.checkpoint),
+                device=self.args.device,
+                session_cache=self.prompt_session_cache,
+            )
+
+        started_at = time.perf_counter()
+        try:
+            if not self.args.mock_prompt and (not self.args.config or not self.args.checkpoint):
+                raise ValueError(
+                    "Prompt mode requires --config and --checkpoint, or use --mock-prompt."
+                )
+            polygon = (
+                self.prompt_review_session.add_positive_point(click, prompt_callback)
+                if is_positive else
+                self.prompt_review_session.add_negative_point(click, prompt_callback)
+            )
+        except Exception as exc:
+            print(f"Prompt session failed: {type(exc).__name__}: {exc}")
+            if not self.prompt_review_session.is_modified:
+                self._close_prompt_review_session()
+            return
+        point_type = "positive" if is_positive else "negative"
+        print(
+            f"[review] prompt {point_type} click completed in "
+            f"{time.perf_counter() - started_at:.3f}s: "
+            f"+{len(self.prompt_review_session.positive_points)} "
+            f"-{len(self.prompt_review_session.negative_points)} "
+            f"score={polygon.score}"
+        )
+        self.draw_overlay()
+
+    def accept_prompt_review(self):
+        """Commit the current Prompt-first preview as one confirmed saved polygon."""
+        if self.prompt_review_session is None:
+            return
+        polygon_id = next_source_polygon_id(self.result, self.args.prompt_source_name)
+        accepted = self.prompt_review_session.accept(
+            polygon_id=polygon_id,
+            source_name=self.args.prompt_source_name,
+        )
+        self.result.polygons.append(accepted)
+        session_id = self.prompt_review_session.session_id
+        self.selected_polygon_id = accepted.id
+        self._close_prompt_review_session()
+        self.modified = True
+        self.save_current_tile()
+        print(f"Prompt session accepted and saved: {session_id} -> {accepted.id}")
+        self.draw_overlay()
+
+    def cancel_prompt_review(self):
+        """Discard one pending Prompt-first session without saving it."""
+        if self.prompt_review_session is None:
+            return
+        session_id = self.prompt_review_session.session_id
+        self.prompt_review_session.cancel()
+        self._close_prompt_review_session()
+        print(f"Prompt session cancelled: {session_id}")
+        self.draw_overlay()
+
+    def _close_prompt_review_session(self):
+        """Release Prompt-first session state and cached Prompt resources."""
+        if self.prompt_session_cache is not None:
+            self.prompt_session_cache.clear()
+        self.prompt_review_session = None
+        self.prompt_session_cache = None
+        self.mode = self.args.default_mode
 
     def start_refine(self):
         """Start an in-memory Refine session for the selected polygon."""
@@ -453,7 +722,7 @@ class TileReviewApplication:
             self.prompt_session_cache.clear()
         self.refine_session = None
         self.prompt_session_cache = None
-        self.mode = "select"
+        self.mode = self.args.default_mode
 
     def add_polygon_at_click(self, click_point):
         """Run mock/real Prompt inference and append one missed building."""
@@ -500,7 +769,7 @@ class TileReviewApplication:
 
         self.selected_polygon_id = polygon.id
         self.modified = True
-        self.mode = "select"
+        self.mode = self.args.default_mode
         print(f"Added polygon from click: id={polygon.id}, score={polygon.score}")
         self.draw_overlay()
 
@@ -538,6 +807,23 @@ class TileReviewApplication:
             else:
                 print("Refine mode is running; use left-click, Enter, Esc, or H.")
             return
+        if self.prompt_review_session is not None:
+            if key in ("enter", "return"):
+                self.accept_prompt_review()
+            elif key in ("escape", "c"):
+                self.cancel_prompt_review()
+            elif key == "s":
+                print("Prompt preview is memory-only; press Enter to accept before saving it.")
+            elif key == "h":
+                print(HELP_TEXT)
+            elif key == "q":
+                self.cancel_prompt_review()
+                self.save_current_tile()
+                self._closing = True
+                self.plt.close(self.fig)
+            else:
+                print("Prompt session is running; use left/right click, Enter, C/Esc, or H.")
+            return
         if navigation_step is not None:
             if is_auto_repeat_key_event(event):
                 return
@@ -564,8 +850,8 @@ class TileReviewApplication:
         elif key == "s":
             self.save_current_tile()
             self.draw_overlay()
-        elif key == "escape" and self.mode == "add":
-            self.mode = "select"
+        elif key in ("escape", "c") and self.mode == "add":
+            self.mode = self.args.default_mode
             print("Add mode cancelled.")
             self.draw_overlay()
         elif key in ("q", "escape"):
@@ -584,6 +870,9 @@ class TileReviewApplication:
         """Save when the window manager closes the figure directly."""
         if not self._closing and self.result is not None:
             self._closing = True
+            if self.prompt_review_session is not None:
+                self.prompt_review_session.cancel()
+                self._close_prompt_review_session()
             if self.refine_session is not None:
                 self.refine_session.cancel()
                 self._close_refine_session()

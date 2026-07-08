@@ -13,7 +13,7 @@ from .manifest import SCHEMA_VERSION, read_json, write_json
 
 
 POLYGON_STATUSES = {"active", "deleted", "hidden"}
-POLYGON_SOURCES = {"auto", "click", "refine"}
+POLYGON_SOURCES = {"auto", "click", "refine", "prompt", "manual"}
 
 
 def _normalize_point(point: Any, field_name: str) -> list[float]:

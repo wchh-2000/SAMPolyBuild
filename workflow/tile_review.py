@@ -95,6 +95,21 @@ def load_review_result(
     )
 
 
+def load_auto_result(
+    tile: TileManifestEntry,
+    auto_results_dir: Path,
+) -> TileResult:
+    """Load one Auto TileResult only, or return a valid empty fallback."""
+    auto_path = Path(auto_results_dir) / f"{tile.tile_id}.json"
+    if auto_path.is_file():
+        return _validate_result_for_tile(TileResult.load(auto_path), tile)
+    return TileResult.create_empty(
+        tile_id=tile.tile_id,
+        offset=[tile.x_offset, tile.y_offset],
+        image_path=tile.image_path,
+    )
+
+
 def save_review_result(result: TileResult, edited_results_dir: Path) -> Path:
     """Atomically save one reviewed tile without dropping polygon fields."""
     destination = Path(edited_results_dir) / f"{result.tile_id}.json"
@@ -115,6 +130,28 @@ def set_polygon_status(result: TileResult, polygon_id: str, status: str) -> Poly
 def next_polygon_id(result: TileResult) -> str:
     """Return the next collision-free canonical polygon id for one tile."""
     prefix = f"{result.tile_id}_poly_"
+    maximum = 0
+    existing = {polygon.id for polygon in result.polygons}
+    for polygon_id in existing:
+        if not polygon_id.startswith(prefix):
+            continue
+        suffix = polygon_id[len(prefix):]
+        if suffix.isdigit():
+            maximum = max(maximum, int(suffix))
+    sequence = maximum + 1
+    candidate = f"{prefix}{sequence:04d}"
+    while candidate in existing:
+        sequence += 1
+        candidate = f"{prefix}{sequence:04d}"
+    return candidate
+
+
+def next_source_polygon_id(result: TileResult, source_name: str) -> str:
+    """Return the next collision-free id for a named polygon source."""
+    source = str(source_name).strip().lower()
+    if not source:
+        raise ValueError("source_name must not be empty.")
+    prefix = f"{result.tile_id}_{source}_"
     maximum = 0
     existing = {polygon.id for polygon in result.polygons}
     for polygon_id in existing:

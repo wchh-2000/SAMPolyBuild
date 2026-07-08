@@ -312,6 +312,56 @@ The Refine session reuses the loaded tile image and caches the active crop
 embedding through `PromptSessionCache`, so repeated Prompt updates do not need
 to rebuild model state from scratch during one session.
 
+### Prompt-first tile review
+
+`review_tiles.py` now defaults to Prompt-first review. In this mode, tile-local
+Auto polygons are hidden and used only as bbox candidates for Prompt. The
+confirmed polygon saved to `edited_results` is the last Prompt version that you
+accept with `Enter`.
+
+Prompt-first mode:
+
+```shell
+python review_tiles.py \
+  --manifest path/to/output/manifests/manifest.json \
+  --auto-results path/to/output/auto_results \
+  --edited-results path/to/output/edited_results \
+  --config configs/prompt_instance_spacenet.json \
+  --checkpoint prompt_interactive.pth \
+  --device cuda:0
+```
+
+Show hidden Auto polygons for debugging:
+
+```shell
+python review_tiles.py \
+  --manifest path/to/output/manifests/manifest.json \
+  --auto-results path/to/output/auto_results \
+  --edited-results path/to/output/edited_results \
+  --config configs/prompt_instance_spacenet.json \
+  --checkpoint prompt_interactive.pth \
+  --device cuda:0 \
+  --show-auto
+```
+
+Legacy select-first mode is still available:
+
+```shell
+python review_tiles.py \
+  --manifest path/to/output/manifests/manifest.json \
+  --auto-results path/to/output/auto_results \
+  --edited-results path/to/output/edited_results \
+  --default-mode select
+```
+
+Prompt-first controls:
+
+- `Left click`: start a building or add a positive point
+- `Right click`: add a negative point
+- `Enter`: accept the current Prompt polygon and save it
+- `C` or `Esc`: cancel the running Prompt session
+- `R`: keep using Refine on a selected confirmed polygon in select-first mode
+
 ## Dataset Preparation
 ### SpaceNet Vegas Dataset
 We converted the original images of the SpaceNet dataset to 8-bit and the annotations to coco format, and divided them into training, validation, and test sets in the ratio of 8:1:1, which are available for download from [here](https://aistudio.baidu.com/datasetdetail/269168). Place the train, val, test folders in the 'dataset/spacenet' folder.

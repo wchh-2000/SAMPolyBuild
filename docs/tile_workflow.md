@@ -238,3 +238,49 @@ python review_tiles.py \
 ```
 
 For a model-free smoke check, replace the Prompt arguments with `--mock-prompt`.
+
+## Prompt-first review mode
+
+Stage 7 keeps `auto_results/` as a hidden bbox provider and makes Prompt the
+default review entry point. The reviewer now starts in `prompt` mode unless
+`--default-mode select` is specified.
+
+```text
+left click building
+  -> select Auto bbox candidate when available
+  -> fall back to fixed bbox when allowed
+  -> run Prompt and show preview polygon
+  -> left click adds positive points
+  -> right click adds negative points
+  -> Enter saves the final prompt polygon
+  -> C / Esc cancels the running prompt session
+```
+
+The default viewer behavior is:
+
+- confirmed `prompt`, `refine`, `click`, and `manual` polygons stay visible
+- `auto` polygons are hidden by default
+- `auto` polygons can still provide Prompt bboxes in the background
+- `--show-auto` draws Auto polygons for debugging
+
+Example command:
+
+```bash
+python review_tiles.py \
+  --manifest path/to/output/manifests/manifest.json \
+  --auto-results path/to/output/auto_results \
+  --edited-results path/to/output/edited_results \
+  --config configs/prompt_instance_spacenet.json \
+  --checkpoint prompt_interactive.pth \
+  --device cuda:0
+```
+
+Legacy selection-first review is still available:
+
+```bash
+python review_tiles.py \
+  --manifest path/to/output/manifests/manifest.json \
+  --auto-results path/to/output/auto_results \
+  --edited-results path/to/output/edited_results \
+  --default-mode select
+```
