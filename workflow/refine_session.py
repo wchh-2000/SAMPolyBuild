@@ -3,7 +3,8 @@
 from copy import deepcopy
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Callable
+import inspect
+from typing import Any, Callable
 from uuid import uuid4
 
 from .tile_manager import PolygonRecord
@@ -32,6 +33,7 @@ class RefineSession:
     current_polygon: PolygonRecord
     positive_points: list[tuple[int, int]] = field(default_factory=list)
     negative_points: list[tuple[int, int]] = field(default_factory=list)
+    click_order: list[dict[str, Any]] = field(default_factory=list)
     history: list[PolygonRecord] = field(default_factory=list)
     is_modified: bool = False
     state: RefineSessionState = RefineSessionState.IDLE
@@ -57,20 +59,24 @@ class RefineSession:
         prompt_callback: PromptCallback,
     ) -> PolygonRecord:
         """Run Prompt with all accumulated positive points and update memory only."""
-        self._require_running()
-        if not isinstance(point, (list, tuple)) or len(point) != 2:
-            raise ValueError("Refine point must be an [x, y] pair.")
-        normalized_point = (int(point[0]), int(point[1]))
-        candidate_points = [*self.positive_points, normalized_point]
-        prediction = prompt_callback(candidate_points, list(self.negative_points))
-        candidate = self._polygon_from_prediction(prediction, candidate_points)
+        return self._apply_click(point, is_positive=True, prompt_callback=prompt_callback)
 
-        # Mutate session state only after prediction validation succeeds.
-        self.positive_points = candidate_points
-        self.current_polygon = candidate
-        self.history.append(deepcopy(candidate))
-        self.is_modified = True
-        return deepcopy(candidate)
+    def add_negative_point(
+        self,
+        point: tuple[int, int],
+        prompt_callback: PromptCallback,
+    ) -> PolygonRecord:
+        """Run Prompt with all accumulated negative clicks and update memory only."""
+        return self._apply_click(point, is_positive=False, prompt_callback=prompt_callback)
+
+    def get_prompt_points_and_labels(self) -> tuple[list[list[int]], list[int]]:
+        """Return ordered prompt clicks and labels in exact user-click sequence."""
+        points = [
+            [int(item["point"][0]), int(item["point"][1])]
+            for item in self.click_order
+        ]
+        labels = [int(item["label"]) for item in self.click_order]
+        return points, labels
 
     def accept(self) -> PolygonRecord:
         """Finish the session and return the accepted polygon for TileResult replacement."""
@@ -88,7 +94,7 @@ class RefineSession:
     def _polygon_from_prediction(
         self,
         prediction: dict,
-        points: list[tuple[int, int]],
+        click_order: list[dict[str, Any]],
     ) -> PolygonRecord:
         """Convert one adapter prediction to a canonical, validated PolygonRecord."""
         if not isinstance(prediction, dict):
@@ -100,15 +106,7 @@ class RefineSession:
         if missing:
             raise ValueError(f"Prompt prediction is missing fields: {missing}")
         click_history = deepcopy(self.original_polygon.click_history)
-        click_history.extend(
-            {
-                "type": "positive",
-                "point": [float(x), float(y)],
-                "mode": "refine",
-                "session_id": self.session_id,
-            }
-            for x, y in points
-        )
+        click_history.extend(deepcopy(item) for item in click_order)
         metadata = deepcopy(self.original_polygon.metadata)
         metadata.update(deepcopy(prediction.get("metadata") or {}))
         metadata["refine_session_id"] = self.session_id
@@ -124,6 +122,79 @@ class RefineSession:
             click_history=click_history,
             metadata=metadata,
         )
+
+    def _apply_click(
+        self,
+        point: tuple[int, int],
+        is_positive: bool,
+        prompt_callback: PromptCallback,
+    ) -> PolygonRecord:
+        """Run Prompt with ordered positive/negative points and update memory only."""
+        self._require_running()
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            raise ValueError("Refine point must be an [x, y] pair.")
+        normalized_point = (int(point[0]), int(point[1]))
+        candidate_positive = [*self.positive_points]
+        candidate_negative = [*self.negative_points]
+        candidate_click_order = [deepcopy(item) for item in self.click_order]
+        label = 1 if is_positive else 0
+        click_type = "positive" if is_positive else "negative"
+        if is_positive:
+            candidate_positive.append(normalized_point)
+        else:
+            candidate_negative.append(normalized_point)
+        candidate_click_order.append(
+            {
+                "type": click_type,
+                "point": [float(normalized_point[0]), float(normalized_point[1])],
+                "label": label,
+                "mode": "refine",
+                "session_id": self.session_id,
+            }
+        )
+        prompt_points = [
+            [int(item["point"][0]), int(item["point"][1])]
+            for item in candidate_click_order
+        ]
+        prompt_labels = [int(item["label"]) for item in candidate_click_order]
+        prediction = self._call_prompt_callback(
+            prompt_callback,
+            candidate_positive,
+            candidate_negative,
+            prompt_points,
+            prompt_labels,
+            candidate_click_order,
+        )
+        candidate = self._polygon_from_prediction(prediction, candidate_click_order)
+
+        self.positive_points = candidate_positive
+        self.negative_points = candidate_negative
+        self.click_order = candidate_click_order
+        self.current_polygon = candidate
+        self.history.append(deepcopy(candidate))
+        self.is_modified = True
+        return deepcopy(candidate)
+
+    def _call_prompt_callback(
+        self,
+        prompt_callback: PromptCallback,
+        positive_points: list[tuple[int, int]],
+        negative_points: list[tuple[int, int]],
+        prompt_points: list[list[int]],
+        prompt_labels: list[int],
+        click_order: list[dict[str, Any]],
+    ) -> dict:
+        """Pass ordered prompt metadata when the callback can accept it."""
+        signature = inspect.signature(prompt_callback)
+        kwargs = {}
+        for name, value in (
+            ("prompt_points", prompt_points),
+            ("prompt_labels", prompt_labels),
+            ("click_order", click_order),
+        ):
+            if name in signature.parameters:
+                kwargs[name] = value
+        return prompt_callback(positive_points, negative_points, **kwargs)
 
     def _require_running(self) -> None:
         """Reject invalid lifecycle transitions with an explicit error."""

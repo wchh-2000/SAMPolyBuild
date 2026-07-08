@@ -362,6 +362,18 @@ Prompt-first controls:
 - `C` or `Esc`: cancel the running Prompt session
 - `R`: keep using Refine on a selected confirmed polygon in select-first mode
 
+Negative-point iterative refine options:
+
+- `--debug-prompt-points`: print ordered points, labels, and predictor inputs
+- `--refine-by-points` / `--no-refine-by-points`: enable or disable point-guided mask refinement
+- `--point-refine-mode distance|connected_component`: choose point-guided refinement mode
+- `--negative-feature-refine`: enable negative-point feature suppression
+- `--negative-similarity-thr`
+- `--negative-feature-patch-size`
+- `--negative-protect-radius`
+- `--negative-spatial-sigma`
+- `--debug-refine-dir`: save per-step prompt debug JSON and mask/polygon images
+
 ## Dataset Preparation
 ### SpaceNet Vegas Dataset
 We converted the original images of the SpaceNet dataset to 8-bit and the annotations to coco format, and divided them into training, validation, and test sets in the ratio of 8:1:1, which are available for download from [here](https://aistudio.baidu.com/datasetdetail/269168). Place the train, val, test folders in the 'dataset/spacenet' folder.

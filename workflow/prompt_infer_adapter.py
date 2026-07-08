@@ -1,10 +1,19 @@
 """Thin Prompt inference adapter for tile-review click additions."""
 
 import math
-from dataclasses import dataclass
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Any, Callable
+import numpy as np
 
+from tools.point_refine_utils import (
+    refine_mask_by_prompt_points,
+    save_binary_mask,
+    save_point_refine_regions,
+    save_prompt_points_json,
+    split_labeled_points,
+)
+from utils.negative_feature_refine import refine_mask_by_negative_features, save_negative_feature_debug
 
 _PROMPT_RUNTIME_CACHE = {}
 
@@ -18,6 +27,7 @@ class PromptSessionCache:
     embedding_key: tuple | None = None
     _embedding_owner: int | None = None
     prepare_count: int = 0
+    debug_step: int = 0
 
     def get_image(self, image_path: Path, loader: Callable[[Path], Any]):
         """Load an RGB tile once per normalized image path."""
@@ -51,6 +61,12 @@ class PromptSessionCache:
         self.image = None
         self.embedding_key = None
         self._embedding_owner = None
+        self.debug_step = 0
+
+    def next_debug_step(self) -> int:
+        """Return the next 1-based debug step number for one active session."""
+        self.debug_step += 1
+        return self.debug_step
 
 
 def make_add_bbox(
@@ -109,6 +125,21 @@ def run_prompt_inference_on_tile(
     checkpoint_path: Path,
     device: str,
     session_cache: PromptSessionCache | None = None,
+    prompt_points: list[list[int]] | None = None,
+    prompt_labels: list[int] | None = None,
+    debug_prompt_points: bool = False,
+    refine_by_points: bool = False,
+    point_refine_mode: str = "distance",
+    negative_margin: float = 0.0,
+    negative_feature_refine: bool = False,
+    negative_similarity_thr: float = 0.75,
+    negative_feature_patch_size: int = 21,
+    negative_protect_radius: int = 20,
+    negative_spatial_sigma: float = 80.0,
+    debug_refine_dir: Path | None = None,
+    tile_id: str | None = None,
+    session_id: str | None = None,
+    click_order: list[dict] | None = None,
 ) -> dict | None:
     """Run existing SAMPoly Prompt inference and normalize its result contract."""
     if not positive_points:
@@ -119,6 +150,7 @@ def run_prompt_inference_on_tile(
         infer_polygon_with_prepared_prompts,
         load_rgb_image,
         normalize_bbox,
+        polygon_from_prediction_mask,
         prepare_crop_prompts,
     )
 
@@ -133,11 +165,22 @@ def run_prompt_inference_on_tile(
     )
     image_height, image_width = image.shape[:2]
     normalized_bbox = normalize_bbox(bbox, image_width, image_height)
-    prompts = [
-        (float(x), float(y), 1) for x, y in positive_points
-    ] + [
-        (float(x), float(y), 0) for x, y in negative_points
-    ]
+    if prompt_points is not None or prompt_labels is not None:
+        if prompt_points is None or prompt_labels is None:
+            raise ValueError("prompt_points and prompt_labels must be provided together.")
+        if len(prompt_points) != len(prompt_labels):
+            raise ValueError("prompt_points and prompt_labels must have the same length.")
+        prompts = [
+            (float(point[0]), float(point[1]), int(label))
+            for point, label in zip(prompt_points, prompt_labels)
+        ]
+    else:
+        prompts = [
+            (float(x), float(y), 1) for x, y in positive_points
+        ] + [
+            (float(x), float(y), 0) for x, y in negative_points
+        ]
+    debug_paths = {}
     if session_cache is None:
         prediction = infer_polygon_with_prompts(
             predictor=predictor,
@@ -179,17 +222,184 @@ def run_prompt_inference_on_tile(
             multi_mask=bool(getattr(settings, "multi_mask", True)),
             max_distance=int(getattr(settings, "max_distance", 10)),
         )
+        before_point_refine_polygon = prediction["polygon"]
+        positive_crop_points, negative_crop_points = split_labeled_points(
+            prediction["point_coords"],
+            prediction["point_labels"],
+        )
+        step_dir = None
+        if debug_prompt_points or debug_refine_dir is not None:
+            root_dir = Path(debug_refine_dir) if debug_refine_dir is not None else Path("work_dir") / "debug_refine"
+            step_index = session_cache.next_debug_step()
+            safe_tile_id = str(tile_id or Path(image_path).stem)
+            safe_session_id = str(session_id or "session")
+            step_dir = root_dir / safe_tile_id / safe_session_id / f"step_{step_index:03d}"
+            step_dir.mkdir(parents=True, exist_ok=True)
+            coordinate_debug = []
+            crop_x1 = int(round(float(pos_transform[0])))
+            crop_y1 = int(round(float(pos_transform[1])))
+            predictor_transform = getattr(getattr(predictor, "transform", None), "apply_coords", None)
+            predictor_points = None
+            if callable(predictor_transform):
+                predictor_points = predictor_transform(
+                    np.asarray(prediction["point_coords"], dtype=np.float32),
+                    image_crop.shape[:2],
+                )
+            for index, (point, label_value) in enumerate(zip(prompts, [item[2] for item in prompts])):
+                crop_xy = [
+                    float(point[0]) - crop_x1,
+                    float(point[1]) - crop_y1,
+                ]
+                predictor_xy = (
+                    predictor_points[index + 1].tolist()
+                    if predictor_points is not None and len(predictor_points) > index + 1
+                    else None
+                )
+                coordinate_debug.append(
+                    {
+                        "raw_mouse_xy": [float(point[0]), float(point[1])],
+                        "image_xy": [float(point[0]), float(point[1])],
+                        "bbox_xyxy": [int(value) for value in normalized_bbox],
+                        "crop_xy_if_used": crop_xy,
+                        "predictor_xy_if_available": predictor_xy,
+                        "label": int(label_value),
+                    }
+                )
+            prompt_payload = {
+                "tile_id": safe_tile_id,
+                "session_id": safe_session_id,
+                "step": step_index,
+                "bbox": [int(value) for value in normalized_bbox],
+                "points": [[float(point[0]), float(point[1])] for point in prompt_points or []],
+                "labels": [int(label) for label in (prompt_labels or [])],
+                "positive_points": [[float(x), float(y)] for x, y in positive_points],
+                "negative_points": [[float(x), float(y)] for x, y in negative_points],
+                "coordinate_debug": coordinate_debug,
+            }
+            debug_paths["prompt_points_json"] = str(
+                save_prompt_points_json(step_dir / "prompt_points.json", prompt_payload)
+            )
+            if debug_prompt_points:
+                print("[debug_prompt_points] bbox =", [int(value) for value in normalized_bbox])
+                print("[debug_prompt_points] points =", prompt_payload["points"])
+                print("[debug_prompt_points] labels =", prompt_payload["labels"])
+                print("[debug_prompt_points] predictor_point_coords =", np.asarray(prediction["point_coords"]).tolist())
+                print("[debug_prompt_points] predictor_point_labels =", np.asarray(prediction["point_labels"]).tolist())
+
+        if refine_by_points:
+            original_mask_before_point_refine = prediction["mask"].copy()
+            if step_dir is not None:
+                before_path = step_dir / "mask_before_point_refine.png"
+                after_path = step_dir / "mask_after_point_refine.png"
+                regions_path = step_dir / "mask_point_refine_regions.png"
+                save_binary_mask(before_path, original_mask_before_point_refine[0])
+                debug_paths["mask_before_point_refine"] = str(before_path)
+            refined_mask, refined, refine_message = refine_mask_by_prompt_points(
+                prediction["mask"],
+                positive_crop_points,
+                negative_crop_points,
+                mode=point_refine_mode,
+                negative_margin=negative_margin,
+            )
+            prediction["metadata"] = dict(prediction.get("metadata") or {})
+            prediction["metadata"]["point_refine_message"] = refine_message
+            if refined:
+                crop_height, crop_width = image_crop.shape[:2]
+                polygon_after_refine, polygon_score = polygon_from_prediction_mask(
+                    mask=refined_mask,
+                    pred_vmap=prediction["pred_vmap"],
+                    pred_voff=prediction["pred_voff"],
+                    crop_width=crop_width,
+                    crop_height=crop_height,
+                    pos_transform=pos_transform,
+                    image_width=image.shape[1],
+                    image_height=image.shape[0],
+                    max_distance=int(getattr(settings, "max_distance", 10)),
+                )
+                prediction["mask"] = refined_mask
+                prediction["polygon"] = polygon_after_refine
+                prediction["score"] = float(polygon_score)
+            if step_dir is not None:
+                save_binary_mask(after_path, prediction["mask"][0])
+                save_point_refine_regions(
+                    regions_path,
+                    original_mask_before_point_refine[0],
+                    prediction["mask"][0],
+                    prediction["point_coords"],
+                    prediction["point_labels"],
+                )
+                debug_paths["mask_after_point_refine"] = str(after_path)
+                debug_paths["mask_point_refine_regions"] = str(regions_path)
+
+        if negative_feature_refine:
+            before_feature_mask = prediction["mask"][0].copy()
+            before_polygon = prediction["polygon"]
+            feature_refine = refine_mask_by_negative_features(
+                image_crop,
+                before_feature_mask,
+                positive_crop_points,
+                negative_crop_points,
+                patch_size=negative_feature_patch_size,
+                similarity_thr=negative_similarity_thr,
+                protect_radius=negative_protect_radius,
+                spatial_sigma=negative_spatial_sigma,
+            )
+            prediction["metadata"] = dict(prediction.get("metadata") or {})
+            prediction["metadata"]["negative_feature_message"] = feature_refine["message"]
+            if feature_refine["applied"]:
+                crop_height, crop_width = image_crop.shape[:2]
+                feature_mask = feature_refine["mask"].reshape(1, crop_height, crop_width)
+                polygon_after_feature, polygon_score = polygon_from_prediction_mask(
+                    mask=feature_mask,
+                    pred_vmap=prediction["pred_vmap"],
+                    pred_voff=prediction["pred_voff"],
+                    crop_width=crop_width,
+                    crop_height=crop_height,
+                    pos_transform=pos_transform,
+                    image_width=image.shape[1],
+                    image_height=image.shape[0],
+                    max_distance=int(getattr(settings, "max_distance", 10)),
+                )
+                prediction["mask"] = feature_mask
+                prediction["polygon"] = polygon_after_feature
+                prediction["score"] = float(polygon_score)
+            if step_dir is not None:
+                save_negative_feature_debug(
+                    str(step_dir),
+                    before_feature_mask,
+                    prediction["mask"][0],
+                    feature_refine["similarity_map"],
+                    feature_refine["prototypes"],
+                    polygon_before=before_point_refine_polygon if refine_by_points else before_polygon,
+                    polygon_after=prediction["polygon"],
+                )
+                for name in (
+                    "negative_patch.png",
+                    "negative_similarity_map.png",
+                    "mask_before_refine.png",
+                    "mask_after_refine.png",
+                    "polygon_before_refine.png",
+                    "polygon_after_refine.png",
+                ):
+                    debug_paths[name.replace(".png", "")] = str(step_dir / name)
     return {
+        "success": True,
         "points_tile": [
             [float(x), float(y)] for x, y in prediction["polygon"]
         ],
         "score": float(prediction["score"]),
         "bbox_tile": [int(value) for value in normalized_bbox],
+        "debug_paths": debug_paths,
         "metadata": {
             "model_score": float(prediction["model_score"]),
             "device": resolved_device,
             "positive_point_count": len(positive_points),
             "negative_point_count": len(negative_points),
+            "point_refine_enabled": bool(refine_by_points),
+            "point_refine_mode": point_refine_mode,
+            "negative_feature_refine": bool(negative_feature_refine),
+            "click_order": click_order or [],
+            **(prediction.get("metadata") or {}),
         },
     }
 
@@ -208,8 +418,9 @@ def run_mock_prompt_inference(
     if x2 <= x1 or y2 <= y1:
         raise ValueError("bbox must have positive width and height.")
 
-    margin_x = (x2 - x1) * 0.2
-    margin_y = (y2 - y1) * 0.2
+    margin_scale = 0.2 + min(len(negative_points), 4) * 0.05
+    margin_x = (x2 - x1) * margin_scale
+    margin_y = (y2 - y1) * margin_scale
     mock_bbox = [x1 + margin_x, y1 + margin_y, x2 - margin_x, y2 - margin_y]
     points = [
         [mock_bbox[0], mock_bbox[1]],
@@ -218,9 +429,11 @@ def run_mock_prompt_inference(
         [mock_bbox[0], mock_bbox[3]],
     ]
     return {
+        "success": True,
         "points_tile": points,
         "score": 0.0,
         "bbox_tile": mock_bbox,
+        "debug_paths": {},
         "metadata": {
             "mock_prompt": True,
             "positive_point_count": len(positive_points),

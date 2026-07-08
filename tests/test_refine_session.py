@@ -55,18 +55,35 @@ class RefineSessionTest(unittest.TestCase):
 
         first = session.add_positive_point((12, 14), callback)
         second = session.add_positive_point((18, 22), callback)
+        third = session.add_negative_point((16, 20), callback)
+        prompt_points, prompt_labels = session.get_prompt_points_and_labels()
         accepted = session.accept()
 
         self.assertEqual(session.state, RefineSessionState.ACCEPTED)
-        self.assertEqual(callback_calls, [([(12, 14)], []), ([(12, 14), (18, 22)], [])])
+        self.assertEqual(
+            callback_calls,
+            [
+                ([(12, 14)], []),
+                ([(12, 14), (18, 22)], []),
+                ([(12, 14), (18, 22)], [(16, 20)]),
+            ],
+        )
         self.assertEqual(session.positive_points, [(12, 14), (18, 22)])
+        self.assertEqual(session.negative_points, [(16, 20)])
+        self.assertEqual(prompt_points, [[12, 14], [18, 22], [16, 20]])
+        self.assertEqual(prompt_labels, [1, 1, 0])
         self.assertTrue(session.is_modified)
-        self.assertEqual(len(session.history), 2)
+        self.assertEqual(len(session.history), 3)
         self.assertEqual(first.source, "refine")
         self.assertEqual(second.source, "refine")
-        self.assertEqual(accepted.points_tile, second.points_tile)
-        self.assertEqual(accepted.click_history[-2]["point"], [12.0, 14.0])
-        self.assertEqual(accepted.click_history[-1]["point"], [18.0, 22.0])
+        self.assertEqual(third.source, "refine")
+        self.assertEqual(accepted.points_tile, third.points_tile)
+        self.assertEqual(accepted.click_history[-3]["point"], [12.0, 14.0])
+        self.assertEqual(accepted.click_history[-3]["label"], 1)
+        self.assertEqual(accepted.click_history[-2]["point"], [18.0, 22.0])
+        self.assertEqual(accepted.click_history[-2]["label"], 1)
+        self.assertEqual(accepted.click_history[-1]["point"], [16.0, 20.0])
+        self.assertEqual(accepted.click_history[-1]["label"], 0)
         self.assertEqual(accepted.metadata["raw_index"], 0)
         self.assertIn("refine_session_id", accepted.metadata)
         self.assertEqual(polygon.source, "auto")

@@ -280,25 +280,29 @@ def infer_polygon_with_prepared_prompts(
     selected_mask = masks[selected_index].reshape(1, crop_height, crop_width)
     pred_vmap = torch.sigmoid(pred_poly["vmap"])
     pred_voff = torch.sigmoid(pred_poly["voff"])
-    polygons, polygon_scores, valid_mask = GetPolygons(
-        selected_mask,
-        pred_vmap,
-        pred_voff,
-        ori_size=(crop_width, crop_height),
+    polygon, polygon_score = polygon_from_prediction_mask(
+        mask=selected_mask,
+        pred_vmap=pred_vmap,
+        pred_voff=pred_voff,
+        crop_width=crop_width,
+        crop_height=crop_height,
+        pos_transform=pos_transform,
+        image_width=image.shape[1],
+        image_height=image.shape[0],
         max_distance=max_distance,
     )
-    if not valid_mask[0] or polygons[0] is None:
-        raise ValueError("SAMPoly did not produce a valid polygon for the selected mask.")
-
-    polygon = transform_polygon_to_original(polygons[0], pos_transform)
-    polygon = validate_polygon(polygon, image.shape[1], image.shape[0])
     return {
         "polygon": polygon,
-        "score": float(polygon_scores[0]),
+        "score": float(polygon_score),
         "model_score": float(model_scores[selected_index]),
         "mask": selected_mask,
         "point_coords": point_coords,
         "point_labels": point_labels,
+        "pred_vmap": pred_vmap,
+        "pred_voff": pred_voff,
+        "pos_transform": pos_transform,
+        "crop_bbox": crop_bbox,
+        "image_crop": image_crop,
     }
 
 
@@ -336,3 +340,29 @@ def validate_polygon(polygon, image_width, image_height):
     if area <= 0:
         raise ValueError("Polygon area must be greater than zero.")
     return polygon
+
+
+def polygon_from_prediction_mask(
+    mask,
+    pred_vmap,
+    pred_voff,
+    crop_width,
+    crop_height,
+    pos_transform,
+    image_width,
+    image_height,
+    max_distance=10,
+):
+    """Decode one refined crop mask back into an original-image polygon."""
+    polygons, scores, valid_mask = GetPolygons(
+        mask,
+        pred_vmap,
+        pred_voff,
+        ori_size=(crop_width, crop_height),
+        max_distance=max_distance,
+    )
+    if not valid_mask[0] or polygons[0] is None:
+        raise ValueError("SAMPoly did not produce a valid polygon for the selected mask.")
+    polygon = transform_polygon_to_original(polygons[0], pos_transform)
+    polygon = validate_polygon(polygon, image_width, image_height)
+    return polygon, float(scores[0])

@@ -63,6 +63,7 @@ class PromptFirstReviewCoreTest(unittest.TestCase):
                 negative_points,
             ),
         )
+        prompt_points, prompt_labels = session.get_prompt_points_and_labels()
 
         result = TileResult(
             tile_id="tile_0014",
@@ -80,6 +81,8 @@ class PromptFirstReviewCoreTest(unittest.TestCase):
         self.assertEqual(second.source, "prompt")
         self.assertEqual(third.source, "prompt")
         self.assertEqual(session.state, PromptReviewSessionState.ACCEPTED)
+        self.assertEqual(prompt_points, [[20, 22], [24, 25], [18, 19]])
+        self.assertEqual(prompt_labels, [1, 1, 0])
         self.assertEqual(accepted.id, "tile_0014_prompt_0001")
         self.assertEqual(accepted.source, "prompt")
         self.assertEqual(accepted.metadata["created_by"], "prompt_first_review")
@@ -94,18 +97,21 @@ class PromptFirstReviewCoreTest(unittest.TestCase):
                 {
                     "type": "positive",
                     "point": [20.0, 22.0],
+                    "label": 1,
                     "mode": "prompt_first",
                     "session_id": session.session_id,
                 },
                 {
                     "type": "positive",
                     "point": [24.0, 25.0],
+                    "label": 1,
                     "mode": "prompt_first",
                     "session_id": session.session_id,
                 },
                 {
                     "type": "negative",
                     "point": [18.0, 19.0],
+                    "label": 0,
                     "mode": "prompt_first",
                     "session_id": session.session_id,
                 },
