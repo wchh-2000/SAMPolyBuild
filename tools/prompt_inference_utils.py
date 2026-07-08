@@ -233,8 +233,6 @@ def infer_polygon_with_prompts(
     multi_mask=True,
     max_distance=10,
 ):
-    import torch
-
     image_crop, crop_bbox, point_coords, point_labels, pos_transform = prepare_crop_prompts(
         image,
         bbox,
@@ -243,6 +241,33 @@ def infer_polygon_with_prompts(
         crop_margin=crop_margin,
     )
     predictor.set_image_resize(image_crop)
+    return infer_polygon_with_prepared_prompts(
+        predictor=predictor,
+        image=image,
+        image_crop=image_crop,
+        crop_bbox=crop_bbox,
+        point_coords=point_coords,
+        point_labels=point_labels,
+        pos_transform=pos_transform,
+        multi_mask=multi_mask,
+        max_distance=max_distance,
+    )
+
+
+def infer_polygon_with_prepared_prompts(
+    predictor,
+    image,
+    image_crop,
+    crop_bbox,
+    point_coords,
+    point_labels,
+    pos_transform,
+    multi_mask=True,
+    max_distance=10,
+):
+    """Predict after ``set_image_resize`` has prepared a reusable embedding."""
+    import torch
+
     masks, model_scores, _, pred_poly = predictor.predict(
         point_coords=point_coords,
         point_labels=point_labels,

@@ -1,10 +1,56 @@
 """Thin Prompt inference adapter for tile-review click additions."""
 
 import math
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Callable
 
 
 _PROMPT_RUNTIME_CACHE = {}
+
+
+@dataclass
+class PromptSessionCache:
+    """Cache one tile image and its active crop embedding during Refine."""
+
+    image_path: Path | None = None
+    image: Any = None
+    embedding_key: tuple | None = None
+    _embedding_owner: int | None = None
+    prepare_count: int = 0
+
+    def get_image(self, image_path: Path, loader: Callable[[Path], Any]):
+        """Load an RGB tile once per normalized image path."""
+        normalized = Path(image_path).expanduser().resolve()
+        if self.image_path != normalized or self.image is None:
+            self.image = loader(normalized)
+            self.image_path = normalized
+            self.embedding_key = None
+            self._embedding_owner = None
+        return self.image
+
+    def ensure_embedding(
+        self,
+        predictor,
+        key: tuple,
+        prepare_embedding: Callable[[], None],
+    ) -> bool:
+        """Prepare an embedding only when its predictor or crop key changes."""
+        owner = id(predictor)
+        if self.embedding_key == key and self._embedding_owner == owner:
+            return False
+        prepare_embedding()
+        self.embedding_key = key
+        self._embedding_owner = owner
+        self.prepare_count += 1
+        return True
+
+    def clear(self) -> None:
+        """Release cached image references when a session exits."""
+        self.image_path = None
+        self.image = None
+        self.embedding_key = None
+        self._embedding_owner = None
 
 
 def make_add_bbox(
@@ -62,6 +108,7 @@ def run_prompt_inference_on_tile(
     config_path: Path,
     checkpoint_path: Path,
     device: str,
+    session_cache: PromptSessionCache | None = None,
 ) -> dict | None:
     """Run existing SAMPoly Prompt inference and normalize its result contract."""
     if not positive_points:
@@ -69,8 +116,10 @@ def run_prompt_inference_on_tile(
 
     from tools.prompt_inference_utils import (
         infer_polygon_with_prompts,
+        infer_polygon_with_prepared_prompts,
         load_rgb_image,
         normalize_bbox,
+        prepare_crop_prompts,
     )
 
     settings, predictor, resolved_device = _prompt_runtime(
@@ -78,7 +127,10 @@ def run_prompt_inference_on_tile(
         checkpoint_path,
         device,
     )
-    image = load_rgb_image(image_path)
+    image = (
+        session_cache.get_image(image_path, load_rgb_image)
+        if session_cache is not None else load_rgb_image(image_path)
+    )
     image_height, image_width = image.shape[:2]
     normalized_bbox = normalize_bbox(bbox, image_width, image_height)
     prompts = [
@@ -86,16 +138,47 @@ def run_prompt_inference_on_tile(
     ] + [
         (float(x), float(y), 0) for x, y in negative_points
     ]
-    prediction = infer_polygon_with_prompts(
-        predictor=predictor,
-        image=image,
-        bbox=normalized_bbox,
-        prompts=prompts,
-        include_bbox_center_prompt=True,
-        crop_margin=0.075,
-        multi_mask=bool(getattr(settings, "multi_mask", True)),
-        max_distance=int(getattr(settings, "max_distance", 10)),
-    )
+    if session_cache is None:
+        prediction = infer_polygon_with_prompts(
+            predictor=predictor,
+            image=image,
+            bbox=normalized_bbox,
+            prompts=prompts,
+            include_bbox_center_prompt=True,
+            crop_margin=0.075,
+            multi_mask=bool(getattr(settings, "multi_mask", True)),
+            max_distance=int(getattr(settings, "max_distance", 10)),
+        )
+    else:
+        image_crop, crop_bbox, point_coords, point_labels, pos_transform = prepare_crop_prompts(
+            image=image,
+            bbox=normalized_bbox,
+            prompts=prompts,
+            include_bbox_center_prompt=True,
+            crop_margin=0.075,
+        )
+        embedding_key = (
+            str(session_cache.image_path),
+            tuple(int(value) for value in normalized_bbox),
+            tuple(int(value) for value in image_crop.shape[:2]),
+            0.075,
+        )
+        session_cache.ensure_embedding(
+            predictor,
+            embedding_key,
+            lambda: predictor.set_image_resize(image_crop),
+        )
+        prediction = infer_polygon_with_prepared_prompts(
+            predictor=predictor,
+            image=image,
+            image_crop=image_crop,
+            crop_bbox=crop_bbox,
+            point_coords=point_coords,
+            point_labels=point_labels,
+            pos_transform=pos_transform,
+            multi_mask=bool(getattr(settings, "multi_mask", True)),
+            max_distance=int(getattr(settings, "max_distance", 10)),
+        )
     return {
         "points_tile": [
             [float(x), float(y)] for x, y in prediction["polygon"]

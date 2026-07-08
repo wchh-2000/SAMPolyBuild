@@ -194,3 +194,47 @@ Use `N`/Right and `P`/Left to save and navigate, click a polygon to select it,
 building; the new click polygon is written only to `edited_results`. Escape
 cancels Add mode without closing the viewer. `--start-tile tile_0030` overrides the default
 resume position, which is the first tile without an edited JSON file.
+
+## Refine session foundation
+
+Stage 6 adds an in-memory Refine session around the existing Prompt pipeline.
+This keeps iterative Prompt clicks isolated from `edited_results` until the
+user explicitly accepts the preview:
+
+```text
+Idle
+  -> R starts Refine on the selected polygon
+  -> left click appends one positive point
+  -> Prompt re-runs with all accumulated session points
+  -> current polygon preview updates in memory
+  -> Enter accepts and writes the refined polygon
+  -> Esc cancels and restores the original polygon
+```
+
+The session state lives in `workflow/refine_session.py` and stores:
+
+- `original_polygon`
+- `current_polygon`
+- `positive_points`
+- `negative_points` (reserved for the next stage)
+- `history`
+- `state`
+
+`review_tiles.py` shows the active Refine session with `Mode: Refine`,
+highlights the selected polygon preview, and overlays positive clicks in cyan.
+Refine uses `workflow.prompt_infer_adapter.PromptSessionCache` so one tile image
+and its prepared crop embedding can be reused across repeated Prompt updates.
+
+Example command:
+
+```bash
+python review_tiles.py \
+  --manifest path/to/output/manifests/manifest.json \
+  --auto-results path/to/output/auto_results \
+  --edited-results path/to/output/edited_results \
+  --config configs/prompt_instance_spacenet.json \
+  --checkpoint prompt_interactive.pth \
+  --device cuda:0
+```
+
+For a model-free smoke check, replace the Prompt arguments with `--mock-prompt`.

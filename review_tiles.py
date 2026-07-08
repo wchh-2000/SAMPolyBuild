@@ -8,10 +8,12 @@ from pathlib import Path
 from utils.image_tile_reader import ImageTileReader
 from workflow.manifest import TileManifest
 from workflow.prompt_infer_adapter import (
+    PromptSessionCache,
     make_add_bbox,
     run_mock_prompt_inference,
     run_prompt_inference_on_tile,
 )
+from workflow.refine_session import RefineSession
 from workflow.tile_review import (
     add_click_polygon,
     first_review_index,
@@ -29,13 +31,15 @@ HELP_TEXT = """Tile review shortcuts:
   N / Right Arrow  save and open next tile
   P / Left Arrow   save and open previous tile
   A                enter Add mode for a missed building
+  R                refine the selected polygon
+  Enter            accept the running Refine session
   D                mark selected polygon deleted
   U                restore selected polygon to active
   S                save current tile
-  Esc              cancel Add mode, otherwise save and quit
+  Esc              cancel Add/Refine mode, otherwise save and quit
   Q                save and quit
   H                print this help
-  Left click       select polygon, or add a positive point in Add mode
+  Left click       select polygon, or add a positive point in Add/Refine mode
 """
 
 
@@ -129,6 +133,8 @@ class TileReviewApplication:
         self.from_edited = False
         self.selected_polygon_id = None
         self.mode = "select"
+        self.refine_session = None
+        self.prompt_session_cache = None
         self.modified = False
         self._closing = False
         self._image_artist = None
@@ -174,6 +180,8 @@ class TileReviewApplication:
         self.image = display_image(image, self.np)
         self.selected_polygon_id = None
         self.mode = "select"
+        self.refine_session = None
+        self.prompt_session_cache = None
         self.modified = False
         self.draw_overlay(reset_image=True)
         print(
@@ -203,7 +211,12 @@ class TileReviewApplication:
                 self._mode_artist = None
 
         for polygon in self.result.polygons:
-            points = self.np.asarray(polygon.points_tile, dtype=float)
+            display_polygon = (
+                self.refine_session.current_polygon
+                if self.refine_session is not None and polygon.id == self.refine_session.polygon_id
+                else polygon
+            )
+            points = self.np.asarray(display_polygon.points_tile, dtype=float)
             selected = polygon.id == self.selected_polygon_id
             if selected:
                 color, linewidth, linestyle = "yellow", 3.0, "-"
@@ -218,6 +231,12 @@ class TileReviewApplication:
                 color=color, linewidth=linewidth, linestyle=linestyle, clip_on=True,
             )
             self._polygon_artists.extend(artists)
+        if self.refine_session is not None and self.refine_session.positive_points:
+            clicks = self.np.asarray(self.refine_session.positive_points, dtype=float)
+            self._polygon_artists.append(self.ax.scatter(
+                clicks[:, 0], clicks[:, 1], marker="+", s=90,
+                linewidths=2.0, color="cyan", clip_on=True,
+            ))
         active, deleted = polygon_status_counts(self.result)
         source_label = "edited_results" if self.from_edited else "auto/empty"
         modified_label = "  |  modified" if self.modified else ""
@@ -286,6 +305,9 @@ class TileReviewApplication:
 
     def navigate(self, step):
         """Save and move one tile while stopping at manifest boundaries."""
+        if self.refine_session is not None:
+            print("Accept with Enter or cancel with Esc before changing tiles.")
+            return
         started_at = time.perf_counter()
         print(f"[review] navigation requested: step={step}, tile={self.tile.tile_id}")
         self.save_current_tile()
@@ -308,6 +330,9 @@ class TileReviewApplication:
         if self.mode == "add":
             self.add_polygon_at_click((float(event.xdata), float(event.ydata)))
             return
+        if self.mode == "refine":
+            self.refine_polygon_at_click((float(event.xdata), float(event.ydata)))
+            return
         polygon = select_polygon_at_point(
             self.result,
             (float(event.xdata), float(event.ydata)),
@@ -322,6 +347,113 @@ class TileReviewApplication:
                 f"score={polygon.score}, source={polygon.source}"
             )
         self.draw_overlay()
+
+    def selected_polygon(self):
+        """Return the selected canonical polygon without changing review state."""
+        if self.selected_polygon_id is None:
+            return None
+        return next(
+            (polygon for polygon in self.result.polygons
+             if polygon.id == self.selected_polygon_id),
+            None,
+        )
+
+    def start_refine(self):
+        """Start an in-memory Refine session for the selected polygon."""
+        polygon = self.selected_polygon()
+        if polygon is None:
+            print("Select a polygon before starting Refine mode.")
+            return
+        if not self.args.mock_prompt and (not self.args.config or not self.args.checkpoint):
+            print("Refine mode requires --config and --checkpoint, or use --mock-prompt.")
+            return
+        self.refine_session = RefineSession.start(polygon)
+        self.prompt_session_cache = PromptSessionCache()
+        self.mode = "refine"
+        print(
+            f"Refine mode enabled: polygon={polygon.id}. "
+            "Left-click positive points; Enter accepts; Esc cancels."
+        )
+        self.draw_overlay()
+
+    def refine_polygon_at_click(self, click_point):
+        """Add one positive point and preview a new polygon without committing it."""
+        if self.refine_session is None:
+            raise RuntimeError("Refine mode has no active session.")
+        image_height, image_width = self.image.shape[:2]
+        click = (
+            min(max(int(round(click_point[0])), 0), image_width - 1),
+            min(max(int(round(click_point[1])), 0), image_height - 1),
+        )
+        original = self.refine_session.original_polygon
+        bbox = original.bbox_tile or [
+            min(point[0] for point in original.points_tile),
+            min(point[1] for point in original.points_tile),
+            max(point[0] for point in original.points_tile),
+            max(point[1] for point in original.points_tile),
+        ]
+
+        def prompt_callback(positive_points, negative_points):
+            if self.args.mock_prompt:
+                return run_mock_prompt_inference(positive_points, negative_points, bbox)
+            return run_prompt_inference_on_tile(
+                image_path=self.image_path,
+                positive_points=positive_points,
+                negative_points=negative_points,
+                bbox=bbox,
+                config_path=Path(self.args.config),
+                checkpoint_path=Path(self.args.checkpoint),
+                device=self.args.device,
+                session_cache=self.prompt_session_cache,
+            )
+
+        started_at = time.perf_counter()
+        try:
+            polygon = self.refine_session.add_positive_point(click, prompt_callback)
+        except Exception as exc:
+            print(f"Refine Prompt failed: {type(exc).__name__}: {exc}")
+            return
+        print(
+            f"[review] refine Prompt completed in {time.perf_counter() - started_at:.3f}s: "
+            f"points={len(self.refine_session.positive_points)}, score={polygon.score}"
+        )
+        self.draw_overlay()
+
+    def accept_refine(self):
+        """Commit the current preview polygon and immediately save edited_results."""
+        if self.refine_session is None:
+            return
+        accepted = self.refine_session.accept()
+        for index, polygon in enumerate(self.result.polygons):
+            if polygon.id == accepted.id:
+                self.result.polygons[index] = accepted
+                break
+        else:
+            raise KeyError(f"Refined polygon disappeared from TileResult: {accepted.id}")
+        session_id = self.refine_session.session_id
+        self._close_refine_session()
+        self.modified = True
+        self.save_current_tile()
+        print(f"Refine session accepted and saved: {session_id}")
+        self.draw_overlay()
+
+    def cancel_refine(self):
+        """Discard all session previews and leave the TileResult untouched."""
+        if self.refine_session is None:
+            return
+        session_id = self.refine_session.session_id
+        self.refine_session.cancel()
+        self._close_refine_session()
+        print(f"Refine session cancelled: {session_id}")
+        self.draw_overlay()
+
+    def _close_refine_session(self):
+        """Release Refine-only state and cached image references."""
+        if self.prompt_session_cache is not None:
+            self.prompt_session_cache.clear()
+        self.refine_session = None
+        self.prompt_session_cache = None
+        self.mode = "select"
 
     def add_polygon_at_click(self, click_point):
         """Run mock/real Prompt inference and append one missed building."""
@@ -389,6 +521,23 @@ class TileReviewApplication:
         native_repeat_supported = callable(
             getattr(getattr(event, "guiEvent", None), "isAutoRepeat", None)
         )
+        if self.mode == "refine":
+            if key in ("enter", "return"):
+                self.accept_refine()
+            elif key == "escape":
+                self.cancel_refine()
+            elif key == "s":
+                print("Refine preview is memory-only; press Enter to accept before saving it.")
+            elif key == "h":
+                print(HELP_TEXT)
+            elif key == "q":
+                self.cancel_refine()
+                self.save_current_tile()
+                self._closing = True
+                self.plt.close(self.fig)
+            else:
+                print("Refine mode is running; use left-click, Enter, Esc, or H.")
+            return
         if navigation_step is not None:
             if is_auto_repeat_key_event(event):
                 return
@@ -409,6 +558,9 @@ class TileReviewApplication:
             self.selected_polygon_id = None
             print("Add mode enabled. Left-click one missed building; Esc cancels.")
             self.draw_overlay()
+        elif key == "r":
+            print("[review] command key received: 'r'")
+            self.start_refine()
         elif key == "s":
             self.save_current_tile()
             self.draw_overlay()
@@ -432,6 +584,9 @@ class TileReviewApplication:
         """Save when the window manager closes the figure directly."""
         if not self._closing and self.result is not None:
             self._closing = True
+            if self.refine_session is not None:
+                self.refine_session.cancel()
+                self._close_refine_session()
             self.save_current_tile()
 
     def show(self):
