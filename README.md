@@ -372,6 +372,7 @@ Negative-point iterative refine options:
 - `--negative-feature-patch-size`
 - `--negative-protect-radius`
 - `--negative-spatial-sigma`
+- `--negative-point-tolerance`: accept clicks slightly outside the preview polygon boundary
 - `--allow-outside-negative-points`: allow external negative points to participate in Prompt updates
 - `--debug-refine-dir`: save per-step prompt debug JSON and mask/polygon images
 

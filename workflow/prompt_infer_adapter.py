@@ -396,6 +396,7 @@ def run_prompt_inference_on_tile(
             "device": resolved_device,
             "positive_point_count": len(positive_points),
             "negative_point_count": len(negative_points),
+            "mask_coordinate_space": "crop",
             "point_refine_enabled": bool(refine_by_points),
             "point_refine_mode": point_refine_mode,
             "negative_feature_refine": bool(negative_feature_refine),

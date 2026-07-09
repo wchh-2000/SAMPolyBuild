@@ -39,6 +39,8 @@ class RefineSession:
     click_order: list[dict[str, Any]] = field(default_factory=list)
     history: list[PolygonRecord] = field(default_factory=list)
     current_mask: Any = None
+    current_mask_coordinate_space: str | None = None
+    last_negative_point_debug: dict[str, Any] = field(default_factory=dict)
     is_modified: bool = False
     state: RefineSessionState = RefineSessionState.IDLE
 
@@ -76,20 +78,67 @@ class RefineSession:
     def can_accept_negative_point(
         self,
         point: tuple[int, int],
+        tolerance: float = 5.0,
+        prefer_polygon: bool = True,
         allow_outside_negative_points: bool = False,
     ) -> bool:
-        """Allow negative points only inside the current preview mask or polygon by default."""
+        """Validate one negative point against the current preview polygon in tile coordinates."""
         self._require_running()
+        normalized = _normalize_point(point)
+        debug_info = {
+            "clicked_image_point": [float(normalized[0]), float(normalized[1])] if normalized is not None else None,
+            "polygon_point_count": 0,
+            "polygon_bbox": None,
+            "point_polygon_distance": None,
+            "tolerance": float(tolerance),
+            "decision": "ignored",
+            "used_mask": False,
+            "current_mask_shape": (
+                list(np.asarray(self.current_mask).shape)
+                if self.current_mask is not None else None
+            ),
+            "mask_coordinate_space": self.current_mask_coordinate_space,
+        }
         if allow_outside_negative_points:
+            debug_info["decision"] = "accepted"
+            debug_info["reason"] = "allow_outside_negative_points"
+            self.last_negative_point_debug = debug_info
             return True
-        if not isinstance(point, (list, tuple)) or len(point) != 2:
+        if normalized is None:
+            debug_info["reason"] = "invalid_point"
+            self.last_negative_point_debug = debug_info
             return False
-        normalized = (int(point[0]), int(point[1]))
-        if self.current_mask is not None:
-            return _point_inside_mask(self.current_mask, normalized)
-        if self.current_polygon is None:
-            return False
-        return _point_inside_polygon(self.current_polygon, normalized)
+        polygon_accepted = False
+        if prefer_polygon and self.current_polygon is not None:
+            polygon_info = _point_against_polygon(
+                self.current_polygon,
+                normalized,
+                tolerance=float(tolerance),
+            )
+            debug_info.update(polygon_info)
+            polygon_accepted = bool(polygon_info["accepted"])
+            if polygon_info["polygon_point_count"] >= 3:
+                debug_info["decision"] = "accepted" if polygon_accepted else "ignored"
+                debug_info["reason"] = "polygon"
+                self.last_negative_point_debug = debug_info
+                return polygon_accepted
+        if (
+            self.current_mask is not None and
+            self.current_mask_coordinate_space == "tile"
+        ):
+            debug_info["used_mask"] = True
+            mask_accepted = _point_inside_mask(self.current_mask, normalized)
+            debug_info["decision"] = "accepted" if mask_accepted else "ignored"
+            debug_info["reason"] = "mask_fallback"
+            self.last_negative_point_debug = debug_info
+            return mask_accepted
+        debug_info["reason"] = (
+            "mask_coordinate_space_not_supported"
+            if self.current_mask is not None and self.current_mask_coordinate_space != "tile"
+            else "polygon_unavailable"
+        )
+        self.last_negative_point_debug = debug_info
+        return False
 
     def get_prompt_points_and_labels(self) -> tuple[list[list[int]], list[int]]:
         """Return ordered prompt clicks and labels in exact user-click sequence."""
@@ -193,6 +242,11 @@ class RefineSession:
         self.negative_points = candidate_negative
         self.click_order = candidate_click_order
         self.current_mask = _extract_prediction_mask(prediction)
+        self.current_mask_coordinate_space = (
+            str((prediction.get("metadata") or {}).get("mask_coordinate_space")).strip()
+            if (prediction.get("metadata") or {}).get("mask_coordinate_space") is not None
+            else None
+        )
         self.current_polygon = candidate
         self.history.append(deepcopy(candidate))
         self.is_modified = True
@@ -238,6 +292,13 @@ def _extract_prediction_mask(prediction: dict) -> np.ndarray | None:
     return (mask_array > 0).astype(np.uint8)
 
 
+def _normalize_point(point: tuple[int, int] | tuple[float, float] | Any) -> tuple[int, int] | None:
+    """Convert one click to rounded tile-image integer coordinates."""
+    if not isinstance(point, (list, tuple)) or len(point) != 2:
+        return None
+    return int(round(float(point[0]))), int(round(float(point[1])))
+
+
 def _point_inside_mask(mask, point: tuple[int, int]) -> bool:
     """Return True when one tile-space point falls on a foreground mask pixel."""
     mask_array = np.asarray(mask)
@@ -251,9 +312,46 @@ def _point_inside_mask(mask, point: tuple[int, int]) -> bool:
     return bool(mask_array[y, x] > 0)
 
 
-def _point_inside_polygon(polygon: PolygonRecord, point: tuple[int, int]) -> bool:
-    """Return True when one tile-space point lies inside or on the polygon boundary."""
+def _point_against_polygon(
+    polygon: PolygonRecord,
+    point: tuple[int, int],
+    tolerance: float,
+) -> dict[str, Any]:
+    """Measure one tile-space click against one tile-space polygon contour."""
     if polygon is None or not polygon.points_tile:
-        return False
-    contour = np.asarray(polygon.points_tile, dtype=np.float32).reshape((-1, 1, 2))
-    return cv2.pointPolygonTest(contour, (float(point[0]), float(point[1])), False) >= 0
+        return {
+            "accepted": False,
+            "polygon_point_count": 0,
+            "polygon_bbox": None,
+            "point_polygon_distance": None,
+        }
+    contour_points = np.asarray(polygon.points_tile, dtype=np.float32)
+    if contour_points.shape[0] < 3:
+        return {
+            "accepted": False,
+            "polygon_point_count": int(contour_points.shape[0]),
+            "polygon_bbox": None,
+            "point_polygon_distance": None,
+        }
+    contour = contour_points.reshape((-1, 1, 2))
+    distance = float(
+        cv2.pointPolygonTest(
+            contour,
+            (float(point[0]), float(point[1])),
+            True,
+        )
+    )
+    x_values = contour_points[:, 0]
+    y_values = contour_points[:, 1]
+    polygon_bbox = [
+        float(np.min(x_values)),
+        float(np.min(y_values)),
+        float(np.max(x_values)),
+        float(np.max(y_values)),
+    ]
+    return {
+        "accepted": distance >= -float(tolerance),
+        "polygon_point_count": int(contour_points.shape[0]),
+        "polygon_bbox": polygon_bbox,
+        "point_polygon_distance": distance,
+    }

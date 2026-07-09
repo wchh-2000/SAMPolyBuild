@@ -165,6 +165,10 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Allow right-click negative points outside the current preview polygon or mask.",
     )
+    parser.add_argument(
+        "--negative-point-tolerance", type=float, default=5.0,
+        help="Allow negative points up to this many pixels outside the preview polygon boundary.",
+    )
     return parser.parse_args()
 
 
@@ -205,6 +209,8 @@ class TileReviewApplication:
             raise ValueError("--bbox-nearest-threshold must be non-negative.")
         if args.add_bbox_size <= 0:
             raise ValueError("--add-bbox-size must be positive.")
+        if args.negative_point_tolerance < 0:
+            raise ValueError("--negative-point-tolerance must be non-negative.")
         if not str(args.prompt_source_name).strip():
             raise ValueError("--prompt-source-name must not be empty.")
         self.args = args
@@ -610,15 +616,27 @@ class TileReviewApplication:
         bbox = self.prompt_review_session.bbox
         if not is_positive and not self.prompt_review_session.can_accept_negative_point(
             click,
+            tolerance=self.args.negative_point_tolerance,
+            prefer_polygon=True,
             allow_outside_negative_points=self.args.allow_outside_negative_points,
         ):
-            print("Negative point outside current polygon/mask, ignored.")
+            debug_info = dict(self.prompt_review_session.last_negative_point_debug)
             if self.args.debug_prompt_points:
-                print(
-                    "[debug_prompt_points] ignored_negative_point="
-                    f"{[int(click[0]), int(click[1])]} reason=outside_current_polygon_or_mask"
-                )
+                print("[debug_prompt_points] negative_point_validation =", {
+                    **debug_info,
+                    "image_shape": [int(image_height), int(image_width)],
+                })
+            print(
+                "Negative point outside current preview polygon, ignored. "
+                f"dist={debug_info.get('point_polygon_distance')}, "
+                f"tolerance={debug_info.get('tolerance')}"
+            )
             return
+        if not is_positive and self.args.debug_prompt_points:
+            print("[debug_prompt_points] negative_point_validation =", {
+                **dict(self.prompt_review_session.last_negative_point_debug),
+                "image_shape": [int(image_height), int(image_width)],
+            })
 
         def prompt_callback(positive_points, negative_points, prompt_points=None, prompt_labels=None, click_order=None):
             if self.args.mock_prompt:
@@ -746,15 +764,27 @@ class TileReviewApplication:
         ]
         if not is_positive and not self.refine_session.can_accept_negative_point(
             click,
+            tolerance=self.args.negative_point_tolerance,
+            prefer_polygon=True,
             allow_outside_negative_points=self.args.allow_outside_negative_points,
         ):
-            print("Negative point outside current polygon/mask, ignored.")
+            debug_info = dict(self.refine_session.last_negative_point_debug)
             if self.args.debug_prompt_points:
-                print(
-                    "[debug_prompt_points] ignored_negative_point="
-                    f"{[int(click[0]), int(click[1])]} reason=outside_current_polygon_or_mask"
-                )
+                print("[debug_prompt_points] negative_point_validation =", {
+                    **debug_info,
+                    "image_shape": [int(image_height), int(image_width)],
+                })
+            print(
+                "Negative point outside current preview polygon, ignored. "
+                f"dist={debug_info.get('point_polygon_distance')}, "
+                f"tolerance={debug_info.get('tolerance')}"
+            )
             return
+        if not is_positive and self.args.debug_prompt_points:
+            print("[debug_prompt_points] negative_point_validation =", {
+                **dict(self.refine_session.last_negative_point_debug),
+                "image_shape": [int(image_height), int(image_width)],
+            })
 
         def prompt_callback(positive_points, negative_points, prompt_points=None, prompt_labels=None, click_order=None):
             if self.args.mock_prompt:

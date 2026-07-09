@@ -290,7 +290,8 @@ python review_tiles.py \
 Stage 8 fixes negative-point review by carrying ordered prompt clicks, labels,
 point-guided mask refinement, and optional negative-feature refinement through
 the Prompt-first and Refine sessions. Outside negative points are ignored by
-default and can be re-enabled with `--allow-outside-negative-points`.
+default and can be re-enabled with `--allow-outside-negative-points`. The
+preview-polygon boundary tolerance is controlled by `--negative-point-tolerance`.
 
 Recommended review command:
 
