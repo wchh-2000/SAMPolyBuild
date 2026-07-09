@@ -357,7 +357,7 @@ python review_tiles.py \
 Prompt-first controls:
 
 - `Left click`: start a building or add a positive point
-- `Right click`: add a negative point
+- `Right click`: add a negative point. By default, points outside the current preview polygon/mask are ignored. Use `--allow-outside-negative-points` to override this.
 - `Enter`: accept the current Prompt polygon and save it
 - `C` or `Esc`: cancel the running Prompt session
 - `R`: keep using Refine on a selected confirmed polygon in select-first mode
@@ -372,6 +372,7 @@ Negative-point iterative refine options:
 - `--negative-feature-patch-size`
 - `--negative-protect-radius`
 - `--negative-spatial-sigma`
+- `--allow-outside-negative-points`: allow external negative points to participate in Prompt updates
 - `--debug-refine-dir`: save per-step prompt debug JSON and mask/polygon images
 
 ## Dataset Preparation

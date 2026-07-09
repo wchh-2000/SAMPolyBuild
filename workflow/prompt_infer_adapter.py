@@ -387,6 +387,7 @@ def run_prompt_inference_on_tile(
         "points_tile": [
             [float(x), float(y)] for x, y in prediction["polygon"]
         ],
+        "mask": prediction.get("mask"),
         "score": float(prediction["score"]),
         "bbox_tile": [int(value) for value in normalized_bbox],
         "debug_paths": debug_paths,

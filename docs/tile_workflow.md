@@ -251,7 +251,7 @@ left click building
   -> fall back to fixed bbox when allowed
   -> run Prompt and show preview polygon
   -> left click adds positive points
-  -> right click adds negative points
+  -> right click adds negative points only when they fall inside the current preview polygon/mask by default
   -> Enter saves the final prompt polygon
   -> C / Esc cancels the running prompt session
 ```
@@ -289,7 +289,8 @@ python review_tiles.py \
 
 Stage 8 fixes negative-point review by carrying ordered prompt clicks, labels,
 point-guided mask refinement, and optional negative-feature refinement through
-the Prompt-first and Refine sessions.
+the Prompt-first and Refine sessions. Outside negative points are ignored by
+default and can be re-enabled with `--allow-outside-negative-points`.
 
 Recommended review command:
 

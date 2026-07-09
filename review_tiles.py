@@ -160,6 +160,11 @@ def parse_args() -> argparse.Namespace:
         "--debug-refine-dir", default=None,
         help="Optional debug output directory. Defaults to work_dir/debug_refine when debugging is enabled.",
     )
+    parser.add_argument(
+        "--allow-outside-negative-points",
+        action="store_true",
+        help="Allow right-click negative points outside the current preview polygon or mask.",
+    )
     return parser.parse_args()
 
 
@@ -603,6 +608,17 @@ class TileReviewApplication:
             min(max(int(round(click_point[1])), 0), image_height - 1),
         )
         bbox = self.prompt_review_session.bbox
+        if not is_positive and not self.prompt_review_session.can_accept_negative_point(
+            click,
+            allow_outside_negative_points=self.args.allow_outside_negative_points,
+        ):
+            print("Negative point outside current polygon/mask, ignored.")
+            if self.args.debug_prompt_points:
+                print(
+                    "[debug_prompt_points] ignored_negative_point="
+                    f"{[int(click[0]), int(click[1])]} reason=outside_current_polygon_or_mask"
+                )
+            return
 
         def prompt_callback(positive_points, negative_points, prompt_points=None, prompt_labels=None, click_order=None):
             if self.args.mock_prompt:
@@ -728,6 +744,17 @@ class TileReviewApplication:
             max(point[0] for point in original.points_tile),
             max(point[1] for point in original.points_tile),
         ]
+        if not is_positive and not self.refine_session.can_accept_negative_point(
+            click,
+            allow_outside_negative_points=self.args.allow_outside_negative_points,
+        ):
+            print("Negative point outside current polygon/mask, ignored.")
+            if self.args.debug_prompt_points:
+                print(
+                    "[debug_prompt_points] ignored_negative_point="
+                    f"{[int(click[0]), int(click[1])]} reason=outside_current_polygon_or_mask"
+                )
+            return
 
         def prompt_callback(positive_points, negative_points, prompt_points=None, prompt_labels=None, click_order=None):
             if self.args.mock_prompt:

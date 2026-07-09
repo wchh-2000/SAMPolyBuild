@@ -7,6 +7,9 @@ import inspect
 from typing import Any, Callable
 from uuid import uuid4
 
+import cv2
+import numpy as np
+
 from .tile_manager import PolygonRecord
 
 
@@ -35,6 +38,7 @@ class RefineSession:
     negative_points: list[tuple[int, int]] = field(default_factory=list)
     click_order: list[dict[str, Any]] = field(default_factory=list)
     history: list[PolygonRecord] = field(default_factory=list)
+    current_mask: Any = None
     is_modified: bool = False
     state: RefineSessionState = RefineSessionState.IDLE
 
@@ -68,6 +72,24 @@ class RefineSession:
     ) -> PolygonRecord:
         """Run Prompt with all accumulated negative clicks and update memory only."""
         return self._apply_click(point, is_positive=False, prompt_callback=prompt_callback)
+
+    def can_accept_negative_point(
+        self,
+        point: tuple[int, int],
+        allow_outside_negative_points: bool = False,
+    ) -> bool:
+        """Allow negative points only inside the current preview mask or polygon by default."""
+        self._require_running()
+        if allow_outside_negative_points:
+            return True
+        if not isinstance(point, (list, tuple)) or len(point) != 2:
+            return False
+        normalized = (int(point[0]), int(point[1]))
+        if self.current_mask is not None:
+            return _point_inside_mask(self.current_mask, normalized)
+        if self.current_polygon is None:
+            return False
+        return _point_inside_polygon(self.current_polygon, normalized)
 
     def get_prompt_points_and_labels(self) -> tuple[list[list[int]], list[int]]:
         """Return ordered prompt clicks and labels in exact user-click sequence."""
@@ -170,6 +192,7 @@ class RefineSession:
         self.positive_points = candidate_positive
         self.negative_points = candidate_negative
         self.click_order = candidate_click_order
+        self.current_mask = _extract_prediction_mask(prediction)
         self.current_polygon = candidate
         self.history.append(deepcopy(candidate))
         self.is_modified = True
@@ -200,3 +223,37 @@ class RefineSession:
         """Reject invalid lifecycle transitions with an explicit error."""
         if self.state is not RefineSessionState.RUNNING:
             raise RuntimeError(f"RefineSession is not running: state={self.state.value}")
+
+
+def _extract_prediction_mask(prediction: dict) -> np.ndarray | None:
+    """Convert one in-memory prediction mask into a stable 2D uint8 array when available."""
+    mask = prediction.get("mask") if isinstance(prediction, dict) else None
+    if mask is None:
+        return None
+    mask_array = np.asarray(mask)
+    if mask_array.ndim == 3 and mask_array.shape[0] == 1:
+        mask_array = mask_array[0]
+    if mask_array.ndim != 2:
+        return None
+    return (mask_array > 0).astype(np.uint8)
+
+
+def _point_inside_mask(mask, point: tuple[int, int]) -> bool:
+    """Return True when one tile-space point falls on a foreground mask pixel."""
+    mask_array = np.asarray(mask)
+    if mask_array.ndim == 3 and mask_array.shape[0] == 1:
+        mask_array = mask_array[0]
+    if mask_array.ndim != 2:
+        return False
+    x, y = int(point[0]), int(point[1])
+    if not (0 <= x < mask_array.shape[1] and 0 <= y < mask_array.shape[0]):
+        return False
+    return bool(mask_array[y, x] > 0)
+
+
+def _point_inside_polygon(polygon: PolygonRecord, point: tuple[int, int]) -> bool:
+    """Return True when one tile-space point lies inside or on the polygon boundary."""
+    if polygon is None or not polygon.points_tile:
+        return False
+    contour = np.asarray(polygon.points_tile, dtype=np.float32).reshape((-1, 1, 2))
+    return cv2.pointPolygonTest(contour, (float(point[0]), float(point[1])), False) >= 0
