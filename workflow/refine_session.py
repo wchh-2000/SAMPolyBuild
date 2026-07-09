@@ -10,6 +10,10 @@ from uuid import uuid4
 import cv2
 import numpy as np
 
+from .refine_polygon_validation import (
+    RefinePolygonValidationConfig,
+    validate_refined_polygon,
+)
 from .tile_manager import PolygonRecord
 
 
@@ -41,11 +45,17 @@ class RefineSession:
     current_mask: Any = None
     current_mask_coordinate_space: str | None = None
     last_negative_point_debug: dict[str, Any] = field(default_factory=dict)
+    validation_config: RefinePolygonValidationConfig = field(default_factory=RefinePolygonValidationConfig)
+    last_refine_validation: dict[str, Any] = field(default_factory=dict)
     is_modified: bool = False
     state: RefineSessionState = RefineSessionState.IDLE
 
     @classmethod
-    def start(cls, polygon: PolygonRecord) -> "RefineSession":
+    def start(
+        cls,
+        polygon: PolygonRecord,
+        validation_config: RefinePolygonValidationConfig | None = None,
+    ) -> "RefineSession":
         """Start a running session from an independently copied polygon."""
         if not isinstance(polygon, PolygonRecord):
             raise TypeError("RefineSession requires a PolygonRecord.")
@@ -56,6 +66,7 @@ class RefineSession:
             polygon_id=polygon.id,
             original_polygon=original,
             current_polygon=deepcopy(original),
+            validation_config=validation_config or RefinePolygonValidationConfig(),
             state=RefineSessionState.RUNNING,
         )
 
@@ -237,6 +248,15 @@ class RefineSession:
             candidate_click_order,
         )
         candidate = self._polygon_from_prediction(prediction, candidate_click_order)
+        validation = validate_refined_polygon(
+            candidate_points=candidate.points_tile,
+            previous_points=self.current_polygon.points_tile,
+            session_bbox=self.original_polygon.bbox_tile or candidate.bbox_tile,
+            config=self.validation_config,
+        )
+        self.last_refine_validation = validation
+        if self.validation_config.reject_invalid_refine and not validation["accepted"]:
+            return deepcopy(self.current_polygon)
 
         self.positive_points = candidate_positive
         self.negative_points = candidate_negative
@@ -250,6 +270,7 @@ class RefineSession:
         self.current_polygon = candidate
         self.history.append(deepcopy(candidate))
         self.is_modified = True
+        self.last_refine_validation = {**validation, "accepted": True, "reason": "accepted"}
         return deepcopy(candidate)
 
     def _call_prompt_callback(

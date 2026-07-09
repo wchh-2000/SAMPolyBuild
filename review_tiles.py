@@ -15,6 +15,7 @@ from workflow.prompt_infer_adapter import (
     run_prompt_inference_on_tile,
 )
 from workflow.prompt_review_session import PromptReviewSession
+from workflow.refine_polygon_validation import RefinePolygonValidationConfig
 from workflow.refine_session import RefineSession
 from workflow.tile_review import (
     add_click_polygon,
@@ -169,6 +170,28 @@ def parse_args() -> argparse.Namespace:
         "--negative-point-tolerance", type=float, default=5.0,
         help="Allow negative points up to this many pixels outside the preview polygon boundary.",
     )
+    parser.add_argument(
+        "--max-polygon-points", type=int, default=80,
+        help="Reject refined polygons whose simplified point count exceeds this threshold.",
+    )
+    parser.add_argument(
+        "--min-polygon-area", type=float, default=50.0,
+        help="Reject refined polygons smaller than this area.",
+    )
+    parser.add_argument(
+        "--max-area-change-ratio", type=float, default=1.5,
+        help="Reject refined polygons whose area grows above this ratio of the previous preview.",
+    )
+    parser.add_argument(
+        "--min-area-change-ratio", type=float, default=0.3,
+        help="Reject refined polygons whose area drops below this ratio of the previous preview.",
+    )
+    parser.add_argument(
+        "--reject-invalid-refine",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Reject invalid refined polygons and keep the previous preview.",
+    )
     return parser.parse_args()
 
 
@@ -211,6 +234,12 @@ class TileReviewApplication:
             raise ValueError("--add-bbox-size must be positive.")
         if args.negative_point_tolerance < 0:
             raise ValueError("--negative-point-tolerance must be non-negative.")
+        if args.max_polygon_points < 3:
+            raise ValueError("--max-polygon-points must be at least 3.")
+        if args.min_polygon_area <= 0:
+            raise ValueError("--min-polygon-area must be greater than zero.")
+        if args.max_area_change_ratio <= 0 or args.min_area_change_ratio <= 0:
+            raise ValueError("--min/max-area-change-ratio must be greater than zero.")
         if not str(args.prompt_source_name).strip():
             raise ValueError("--prompt-source-name must not be empty.")
         self.args = args
@@ -254,6 +283,16 @@ class TileReviewApplication:
         except AttributeError:
             pass
         self.load_current_tile()
+
+    def refine_validation_config(self):
+        """Build one session validation config from current command-line arguments."""
+        return RefinePolygonValidationConfig(
+            max_polygon_points=int(self.args.max_polygon_points),
+            min_polygon_area=float(self.args.min_polygon_area),
+            max_area_change_ratio=float(self.args.max_area_change_ratio),
+            min_area_change_ratio=float(self.args.min_area_change_ratio),
+            reject_invalid_refine=bool(self.args.reject_invalid_refine),
+        )
 
     @property
     def tile(self):
@@ -595,6 +634,7 @@ class TileReviewApplication:
             selected_auto_polygon_id=selected_auto_polygon_id,
             selected_auto_score=selected_auto_score,
             selected_auto_distance=selected_auto_distance,
+            validation_config=self.refine_validation_config(),
         )
         self.prompt_session_cache = PromptSessionCache()
         self.mode = "prompt"
@@ -683,6 +723,16 @@ class TileReviewApplication:
                 self._close_prompt_review_session()
             return
         point_type = "positive" if is_positive else "negative"
+        validation = dict(self.prompt_review_session.last_refine_validation)
+        if validation and not validation.get("accepted", True):
+            print(
+                f"[review] prompt {point_type} click rejected: "
+                f"reason={validation.get('reason')} "
+                f"area={validation.get('candidate_area')} "
+                f"ratio={validation.get('area_ratio')}"
+            )
+            self.draw_overlay()
+            return
         print(
             f"[review] prompt {point_type} click completed in "
             f"{time.perf_counter() - started_at:.3f}s: "
@@ -737,7 +787,10 @@ class TileReviewApplication:
         if not self.args.mock_prompt and (not self.args.config or not self.args.checkpoint):
             print("Refine mode requires --config and --checkpoint, or use --mock-prompt.")
             return
-        self.refine_session = RefineSession.start(polygon)
+        self.refine_session = RefineSession.start(
+            polygon,
+            validation_config=self.refine_validation_config(),
+        )
         self.prompt_session_cache = PromptSessionCache()
         self.mode = "refine"
         print(
@@ -823,6 +876,16 @@ class TileReviewApplication:
             )
         except Exception as exc:
             print(f"Refine Prompt failed: {type(exc).__name__}: {exc}")
+            return
+        validation = dict(self.refine_session.last_refine_validation)
+        if validation and not validation.get("accepted", True):
+            print(
+                f"[review] refine Prompt rejected: "
+                f"reason={validation.get('reason')} "
+                f"area={validation.get('candidate_area')} "
+                f"ratio={validation.get('area_ratio')}"
+            )
+            self.draw_overlay()
             return
         print(
             f"[review] refine Prompt completed in {time.perf_counter() - started_at:.3f}s: "

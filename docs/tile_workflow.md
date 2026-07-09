@@ -292,6 +292,8 @@ point-guided mask refinement, and optional negative-feature refinement through
 the Prompt-first and Refine sessions. Outside negative points are ignored by
 default and can be re-enabled with `--allow-outside-negative-points`. The
 preview-polygon boundary tolerance is controlled by `--negative-point-tolerance`.
+Refine preview replacement is now guarded by polygon quality gates such as
+point-count, area-ratio, and bbox-overlap checks.
 
 Recommended review command:
 

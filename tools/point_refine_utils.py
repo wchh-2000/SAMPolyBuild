@@ -7,6 +7,112 @@ import cv2
 import numpy as np
 
 
+def keep_primary_component(
+    mask,
+    positive_points: list[tuple[int, int]] | None = None,
+) -> tuple[np.ndarray, bool, str]:
+    """Keep one primary connected component, preferring components that contain positive points."""
+    original_mask = np.asarray(mask).copy()
+    if original_mask.ndim != 3 or original_mask.shape[0] != 1:
+        raise ValueError(f"Expected mask shape (1, H, W), got {original_mask.shape}")
+    binary_mask = (original_mask[0] > 0).astype(np.uint8)
+    if np.count_nonzero(binary_mask) == 0:
+        return original_mask, False, "Primary-component filtering received an empty mask."
+
+    num_components, labels_map, stats, _ = cv2.connectedComponentsWithStats(binary_mask, connectivity=8)
+    if num_components <= 2:
+        return original_mask, False, "Mask already has one foreground component."
+
+    candidate_components = []
+    positive_components = set()
+    for x, y in positive_points or []:
+        if 0 <= x < binary_mask.shape[1] and 0 <= y < binary_mask.shape[0]:
+            component_id = int(labels_map[y, x])
+            if component_id > 0:
+                positive_components.add(component_id)
+    if positive_components:
+        candidate_components = list(positive_components)
+        selection_reason = "largest_positive_component"
+    else:
+        candidate_components = list(range(1, num_components))
+        selection_reason = "largest_foreground_component"
+
+    selected_component = max(
+        candidate_components,
+        key=lambda component_id: int(stats[component_id, cv2.CC_STAT_AREA]),
+    )
+    refined_mask = np.zeros_like(binary_mask, dtype=original_mask.dtype)
+    refined_mask[labels_map == selected_component] = 1
+    removed_components = [
+        int(component_id) for component_id in range(1, num_components)
+        if component_id != selected_component
+    ]
+    message = (
+        "Primary-component filtering applied: "
+        f"reason={selection_reason}, selected_component={int(selected_component)}, "
+        f"selected_area={int(stats[selected_component, cv2.CC_STAT_AREA])}, "
+        f"removed_components={removed_components}"
+    )
+    return refined_mask.reshape(1, refined_mask.shape[0], refined_mask.shape[1]), True, message
+
+
+def extract_main_polygon_from_mask(
+    mask_2d,
+    positive_points: list[tuple[int, int]] | None = None,
+    approx_epsilon_ratio: float = 0.01,
+) -> tuple[list[list[float]] | None, dict]:
+    """Extract one primary external contour from a binary mask and simplify it."""
+    binary_mask = (np.asarray(mask_2d) > 0).astype(np.uint8)
+    contours, _ = cv2.findContours(binary_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None, {
+            "accepted": False,
+            "reason": "no_external_contour",
+            "contour_count": 0,
+        }
+    contour_infos = []
+    for contour in contours:
+        area = float(cv2.contourArea(contour))
+        if area <= 0:
+            continue
+        contains_positive = False
+        for point in positive_points or []:
+            if cv2.pointPolygonTest(contour, (float(point[0]), float(point[1])), False) >= 0:
+                contains_positive = True
+                break
+        contour_infos.append(
+            {
+                "contour": contour,
+                "area": area,
+                "contains_positive": contains_positive,
+            }
+        )
+    if not contour_infos:
+        return None, {
+            "accepted": False,
+            "reason": "all_external_contours_empty",
+            "contour_count": int(len(contours)),
+        }
+    preferred = [item for item in contour_infos if item["contains_positive"]]
+    pool = preferred or contour_infos
+    selected = max(pool, key=lambda item: item["area"])
+    perimeter = float(cv2.arcLength(selected["contour"], True))
+    epsilon = max(perimeter * float(approx_epsilon_ratio), 1.0)
+    approx = cv2.approxPolyDP(selected["contour"], epsilon, True)
+    polygon = [
+        [float(point[0][0]), float(point[0][1])]
+        for point in approx
+    ]
+    return polygon, {
+        "accepted": True,
+        "reason": "positive_contour" if preferred else "largest_contour",
+        "contour_count": int(len(contour_infos)),
+        "selected_area": float(selected["area"]),
+        "polygon_point_count": int(len(polygon)),
+        "contains_positive": bool(selected["contains_positive"]),
+    }
+
+
 def split_prompt_points(
     point_coords,
     point_labels,
@@ -105,7 +211,12 @@ def refine_mask_by_connected_components(
                 negative_components.add(component_id)
 
     if positive_components:
-        keep_components = positive_components
+        keep_components = {
+            max(
+                positive_components,
+                key=lambda component_id: int(np.count_nonzero(labels_map == component_id)),
+            )
+        }
     elif negative_components:
         keep_components = all_components - negative_components
     else:
@@ -120,13 +231,20 @@ def refine_mask_by_connected_components(
     if np.count_nonzero(refined_mask) == 0:
         return original_mask, False, "Point refinement removed all pixels; using original mask."
 
+    refined_mask_3d = refined_mask.reshape(1, refined_mask.shape[0], refined_mask.shape[1])
+    refined_mask_3d, primary_applied, primary_message = keep_primary_component(
+        refined_mask_3d,
+        positive_points=positive_points,
+    )
     message = (
         "Connected-component point refinement applied: "
         f"positive_components={sorted(positive_components)}, "
         f"negative_components={sorted(negative_components)}, "
         f"kept_components={sorted(keep_components)}"
     )
-    return refined_mask.reshape(1, refined_mask.shape[0], refined_mask.shape[1]), True, message
+    if primary_applied:
+        message = f"{message}; {primary_message}"
+    return refined_mask_3d, True, message
 
 
 def refine_mask_by_distance(
@@ -172,7 +290,13 @@ def refine_mask_by_distance(
         f"negative_margin={negative_margin}, removed_pixels={removed_pixels}, "
         f"kept_pixels={int(np.count_nonzero(refined_mask_2d))}"
     )
-    return refined_mask_2d.reshape(1, refined_mask_2d.shape[0], refined_mask_2d.shape[1]), True, message
+    refined_mask_3d, primary_applied, primary_message = keep_primary_component(
+        refined_mask_2d.reshape(1, refined_mask_2d.shape[0], refined_mask_2d.shape[1]),
+        positive_points=positive_points,
+    )
+    if primary_applied:
+        message = f"{message}; {primary_message}"
+    return refined_mask_3d, True, message
 
 
 def refine_mask_by_prompt_points(

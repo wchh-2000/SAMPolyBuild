@@ -10,6 +10,10 @@ from uuid import uuid4
 import cv2
 import numpy as np
 
+from .refine_polygon_validation import (
+    RefinePolygonValidationConfig,
+    validate_refined_polygon,
+)
 from .tile_manager import PolygonRecord
 
 
@@ -45,6 +49,8 @@ class PromptReviewSession:
     current_mask_coordinate_space: str | None = None
     current_prediction: dict | None = None
     last_negative_point_debug: dict[str, Any] = field(default_factory=dict)
+    validation_config: RefinePolygonValidationConfig = field(default_factory=RefinePolygonValidationConfig)
+    last_refine_validation: dict[str, Any] = field(default_factory=dict)
     is_modified: bool = False
     state: PromptReviewSessionState = PromptReviewSessionState.IDLE
 
@@ -57,6 +63,7 @@ class PromptReviewSession:
         selected_auto_polygon_id: str | None = None,
         selected_auto_score: float | None = None,
         selected_auto_distance: float | None = None,
+        validation_config: RefinePolygonValidationConfig | None = None,
     ) -> "PromptReviewSession":
         """Start one running session with a fixed bbox provider decision."""
         if not bbox or len(bbox) != 4:
@@ -75,6 +82,7 @@ class PromptReviewSession:
                 float(selected_auto_distance)
                 if selected_auto_distance is not None else None
             ),
+            validation_config=validation_config or RefinePolygonValidationConfig(),
             state=PromptReviewSessionState.RUNNING,
         )
 
@@ -227,6 +235,18 @@ class PromptReviewSession:
             candidate_click_order,
         )
         candidate = self._polygon_from_prediction(prediction, candidate_click_order)
+        validation = validate_refined_polygon(
+            candidate_points=candidate.points_tile,
+            previous_points=(
+                self.current_polygon.points_tile
+                if self.current_polygon is not None else None
+            ),
+            session_bbox=self.bbox,
+            config=self.validation_config,
+        )
+        self.last_refine_validation = validation
+        if self.validation_config.reject_invalid_refine and not validation["accepted"]:
+            return deepcopy(self.current_polygon) if self.current_polygon is not None else deepcopy(candidate)
 
         self.positive_points = candidate_positive
         self.negative_points = candidate_negative
@@ -241,6 +261,7 @@ class PromptReviewSession:
         self.current_polygon = candidate
         self.history.append(deepcopy(candidate))
         self.is_modified = True
+        self.last_refine_validation = {**validation, "accepted": True, "reason": "accepted"}
         return deepcopy(candidate)
 
     def _polygon_from_prediction(

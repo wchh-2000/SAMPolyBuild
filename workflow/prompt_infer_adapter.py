@@ -4,9 +4,12 @@ import math
 from pathlib import Path
 from dataclasses import dataclass
 from typing import Any, Callable
+import cv2
 import numpy as np
 
 from tools.point_refine_utils import (
+    extract_main_polygon_from_mask,
+    keep_primary_component,
     refine_mask_by_prompt_points,
     save_binary_mask,
     save_point_refine_regions,
@@ -305,20 +308,18 @@ def run_prompt_inference_on_tile(
             prediction["metadata"]["point_refine_message"] = refine_message
             if refined:
                 crop_height, crop_width = image_crop.shape[:2]
-                polygon_after_refine, polygon_score = polygon_from_prediction_mask(
-                    mask=refined_mask,
-                    pred_vmap=prediction["pred_vmap"],
-                    pred_voff=prediction["pred_voff"],
-                    crop_width=crop_width,
-                    crop_height=crop_height,
-                    pos_transform=pos_transform,
-                    image_width=image.shape[1],
-                    image_height=image.shape[0],
-                    max_distance=int(getattr(settings, "max_distance", 10)),
+                polygon_after_refine, polygon_score, extraction_metadata = _polygon_from_refined_mask(
+                    refined_mask,
+                    positive_crop_points,
+                    pos_transform,
+                    image.shape[1],
+                    image.shape[0],
                 )
                 prediction["mask"] = refined_mask
                 prediction["polygon"] = polygon_after_refine
                 prediction["score"] = float(polygon_score)
+                prediction["metadata"] = dict(prediction.get("metadata") or {})
+                prediction["metadata"]["mask_polygon_extraction"] = extraction_metadata
             if step_dir is not None:
                 save_binary_mask(after_path, prediction["mask"][0])
                 save_point_refine_regions(
@@ -348,21 +349,23 @@ def run_prompt_inference_on_tile(
             prediction["metadata"]["negative_feature_message"] = feature_refine["message"]
             if feature_refine["applied"]:
                 crop_height, crop_width = image_crop.shape[:2]
-                feature_mask = feature_refine["mask"].reshape(1, crop_height, crop_width)
-                polygon_after_feature, polygon_score = polygon_from_prediction_mask(
-                    mask=feature_mask,
-                    pred_vmap=prediction["pred_vmap"],
-                    pred_voff=prediction["pred_voff"],
-                    crop_width=crop_width,
-                    crop_height=crop_height,
-                    pos_transform=pos_transform,
-                    image_width=image.shape[1],
-                    image_height=image.shape[0],
-                    max_distance=int(getattr(settings, "max_distance", 10)),
+                feature_mask, _, primary_message = keep_primary_component(
+                    feature_refine["mask"].reshape(1, crop_height, crop_width),
+                    positive_points=positive_crop_points,
+                )
+                polygon_after_feature, polygon_score, extraction_metadata = _polygon_from_refined_mask(
+                    feature_mask,
+                    positive_crop_points,
+                    pos_transform,
+                    image.shape[1],
+                    image.shape[0],
                 )
                 prediction["mask"] = feature_mask
                 prediction["polygon"] = polygon_after_feature
                 prediction["score"] = float(polygon_score)
+                prediction["metadata"] = dict(prediction.get("metadata") or {})
+                prediction["metadata"]["negative_feature_primary_component"] = primary_message
+                prediction["metadata"]["mask_polygon_extraction"] = extraction_metadata
             if step_dir is not None:
                 save_negative_feature_debug(
                     str(step_dir),
@@ -442,3 +445,27 @@ def run_mock_prompt_inference(
             "negative_point_count": len(negative_points),
         },
     }
+
+
+def _polygon_from_refined_mask(mask, positive_points, pos_transform, image_width, image_height):
+    """Extract one robust polygon from a refined single-component mask."""
+    from tools.prompt_inference_utils import validate_polygon
+    from utils.post_process import transform_polygon_to_original
+
+    polygon_crop, extraction_metadata = extract_main_polygon_from_mask(
+        np.asarray(mask)[0],
+        positive_points=positive_points,
+    )
+    if polygon_crop is None:
+        raise ValueError(f"Failed to extract polygon from refined mask: {extraction_metadata}")
+    polygon_original = transform_polygon_to_original(
+        np.asarray(polygon_crop, dtype=np.float32),
+        pos_transform,
+    )
+    polygon_validated = validate_polygon(
+        polygon_original,
+        image_width,
+        image_height,
+    )
+    score = float(max(cv2.contourArea(np.asarray(polygon_crop, dtype=np.float32)), 1.0))
+    return polygon_validated.tolist(), score, extraction_metadata
