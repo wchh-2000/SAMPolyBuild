@@ -38,3 +38,7 @@ model_ts*.txt
 .vscode
 _darcs
 
+# Local agent and code index data
+/.agents/
+/.codegraph/
+

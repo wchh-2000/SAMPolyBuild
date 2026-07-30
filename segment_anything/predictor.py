@@ -130,6 +130,7 @@ class SamPredictor:
         mask_input: Optional[np.ndarray] = None,
         multimask_output: bool = True,
         return_logits: bool = False,
+        debug_prompt_points: bool = False,
     ) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
         Predict masks for the given input prompts, using the currently set image.
@@ -172,10 +173,19 @@ class SamPredictor:
             assert (
                 point_labels is not None
             ), "point_labels must be supplied if point_coords is supplied."
+            if debug_prompt_points:
+                print("[debug_prompt_points] predictor raw input")
+                print(f"  point_coords = {point_coords.tolist()}")
+                print(f"  point_labels = {point_labels.tolist()}")
+                print(f"  original_size = {self.original_size}, input_size = {self.input_size}")
             point_coords = self.transform.apply_coords(point_coords, self.original_size)
             coords_torch = torch.as_tensor(point_coords, dtype=torch.float, device=self.device)
             labels_torch = torch.as_tensor(point_labels, dtype=torch.int, device=self.device)
             coords_torch, labels_torch = coords_torch[None, :, :], labels_torch[None, :]
+            if debug_prompt_points:
+                print("[debug_prompt_points] after transform")
+                print(f"  point_coords = {coords_torch.detach().cpu().numpy().tolist()}")
+                print(f"  point_labels = {labels_torch.detach().cpu().numpy().tolist()}")
         if box is not None:
             box = self.transform.apply_boxes(box, self.original_size)
             box_torch = torch.as_tensor(box, dtype=torch.float, device=self.device)
@@ -191,6 +201,7 @@ class SamPredictor:
             mask_input_torch,
             multimask_output,
             return_logits=return_logits,
+            debug_prompt_points=debug_prompt_points,
         )
         if self.polygon:
           low_res_masks,polygon=low_res_masks
@@ -212,6 +223,7 @@ class SamPredictor:
         mask_input: Optional[torch.Tensor] = None,
         multimask_output: bool = True,
         return_logits: bool = False,
+        debug_prompt_points: bool = False,
     ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Predict masks for the given input prompts, using the currently set image.
@@ -256,12 +268,32 @@ class SamPredictor:
         else:
             points = None
 
+        if debug_prompt_points:
+            print("[debug_prompt_points] before prompt encoder")
+            if point_coords is None:
+                print("  point_coords = None")
+                print("  point_labels = None")
+            else:
+                print(f"  point_coords = {point_coords.detach().cpu().numpy().tolist()}")
+                print(f"  point_labels = {point_labels.detach().cpu().numpy().tolist()}")
+
         # Embed prompts
         sparse_embeddings, dense_embeddings = self.model.prompt_encoder(
             points=points,
             boxes=boxes,
             masks=mask_input,
         )
+
+        if debug_prompt_points:
+            print("[debug_prompt_points] before mask prediction")
+            if point_coords is None:
+                print("  point_coords = None")
+                print("  point_labels = None")
+            else:
+                print(f"  point_coords = {point_coords.detach().cpu().numpy().tolist()}")
+                print(f"  point_labels = {point_labels.detach().cpu().numpy().tolist()}")
+            print(f"  sparse_embeddings_shape = {tuple(sparse_embeddings.shape)}")
+            print(f"  dense_embeddings_shape = {tuple(dense_embeddings.shape)}")
 
         # Predict masks
         if self.polygon:
